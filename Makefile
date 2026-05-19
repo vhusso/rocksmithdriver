@@ -7,10 +7,11 @@ DRIVER_BIN := $(DRIVER_BUNDLE)/Contents/MacOS/RocksmithMotuBridge
 HELPER_BIN := $(BUILD_DIR)/bin/RocksmithBridgeHelper
 CTL_BIN := $(BUILD_DIR)/bin/rocksmith_bridge_ctl
 RTL_BIN := $(BUILD_DIR)/bin/rocksmith_bridge_rtl
+UNIT_TEST_BIN := $(BUILD_DIR)/bin/rocksmith_bridge_unit_tests
 HAL_INSTALL_DIR := /Library/Audio/Plug-Ins/HAL
 HELPER_INSTALL_DIR := /usr/local/libexec/RocksmithMotuBridge
 
-.PHONY: all driver helper ctl rtl bundle sign verify test clean install-local create-aggregate
+.PHONY: all driver helper ctl rtl unit-tests bundle sign verify test check clean install-local create-aggregate
 
 all: bundle helper ctl rtl
 
@@ -21,6 +22,9 @@ helper: $(HELPER_BIN)
 ctl: $(CTL_BIN)
 
 rtl: $(RTL_BIN)
+
+unit-tests: $(UNIT_TEST_BIN)
+	"$(UNIT_TEST_BIN)"
 
 bundle: $(DRIVER_BIN) $(DRIVER_BUNDLE)/Contents/Info.plist sign
 
@@ -46,6 +50,9 @@ $(CTL_BIN): src/tools/rocksmith_bridge_ctl.cpp include/RocksmithBridge/SharedRin
 $(RTL_BIN): src/tools/rocksmith_bridge_rtl.cpp include/RocksmithBridge/Config.h include/RocksmithBridge/CoreAudioDeviceUtils.h | $(BUILD_DIR)/bin
 	$(CXX) $(CXXFLAGS) -framework CoreAudio -framework AudioToolbox -framework AudioUnit -framework CoreFoundation "$<" -o "$@"
 
+$(UNIT_TEST_BIN): tests/unit_tests.cpp include/RocksmithBridge/SharedRingBuffer.h include/RocksmithBridge/CoreAudioDeviceUtils.h include/RocksmithBridge/Config.h | $(BUILD_DIR)/bin
+	$(CXX) $(CXXFLAGS) -framework CoreAudio -framework CoreFoundation "$<" -o "$@"
+
 sign: $(DRIVER_BIN)
 	codesign --force --sign - "$(DRIVER_BUNDLE)"
 
@@ -55,7 +62,9 @@ verify: all
 	zsh -n scripts/install_launch_agent.sh
 	zsh -n scripts/uninstall_local.sh
 
-test: verify
+test: verify unit-tests
+
+check: test
 
 install-local: all
 	install -d "$(HAL_INSTALL_DIR)" "$(HELPER_INSTALL_DIR)"

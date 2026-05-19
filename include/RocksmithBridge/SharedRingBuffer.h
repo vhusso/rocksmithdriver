@@ -63,6 +63,7 @@ enum class SharedRingOpenError {
     openFailed,
     truncateFailed,
     mmapFailed,
+    invalidPlayer,
     invalidFile,
     invalidHeader
 };
@@ -77,6 +78,8 @@ inline const char* sharedRingOpenErrorMessage(SharedRingOpenError error) {
             return "ftruncate failed";
         case SharedRingOpenError::mmapFailed:
             return "mmap failed";
+        case SharedRingOpenError::invalidPlayer:
+            return "invalid player";
         case SharedRingOpenError::invalidFile:
             return "invalid file";
         case SharedRingOpenError::invalidHeader:
@@ -106,7 +109,13 @@ inline void initializeSharedRing(SharedRingHeader* header) {
 }
 
 inline const char* sharedRingPathForPlayer(uint32_t player) {
-    return player <= 1 ? kSharedMemoryPath : kSharedMemoryPathPlayer2;
+    if (player == 1) {
+        return kSharedMemoryPath;
+    }
+    if (player == 2) {
+        return kSharedMemoryPathPlayer2;
+    }
+    return nullptr;
 }
 
 inline bool openSharedRingAtPath(SharedRing& ring, const char* path, bool createIfMissing,
@@ -196,7 +205,14 @@ inline bool openSharedRing(SharedRing& ring, bool createIfMissing, SharedRingOpe
 
 inline bool openSharedRingForPlayer(SharedRing& ring, uint32_t player, bool createIfMissing,
                                     SharedRingOpenError* error = nullptr) {
-    return openSharedRingAtPath(ring, sharedRingPathForPlayer(player), createIfMissing, error);
+    const char* path = sharedRingPathForPlayer(player);
+    if (path == nullptr) {
+        if (error != nullptr) {
+            *error = SharedRingOpenError::invalidPlayer;
+        }
+        return false;
+    }
+    return openSharedRingAtPath(ring, path, createIfMissing, error);
 }
 
 inline void closeSharedRing(SharedRing& ring) {

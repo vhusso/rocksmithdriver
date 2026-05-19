@@ -12,5 +12,5 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Verify
-        run: make verify
+      - name: Test
+        run: make test

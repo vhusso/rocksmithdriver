@@ -5,8 +5,10 @@ This project is a local-development macOS Core Audio driver stack. Changes shoul
 ## Development Loop
 
 ```sh
-make verify
+make test
 ```
+
+`make check` is kept as an alias for the same gate.
 
 For installed-driver checks:
 

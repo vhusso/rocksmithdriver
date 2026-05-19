@@ -17,6 +17,12 @@ make all
 
 The build uses Command Line Tools and produces artifacts under `build/`.
 
+Run local quality checks:
+
+```sh
+make test
+```
+
 ## Local Install
 
 ```sh
