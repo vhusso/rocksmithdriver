@@ -33,7 +33,15 @@ make test
 
 ## Local Install
 
-`install-local` copies the HAL bundle into `/Library/Audio/Plug-Ins/HAL`, installs the helper under `/usr/local/libexec`, enforces root-owned install permissions, and restarts `coreaudiod`.
+The easiest local setup path is:
+
+```sh
+make setup-local
+```
+
+That runs the local quality gate, installs the HAL bundle and helper, loads the launch agent, applies the known-good `64` frame buffers, repairs the Rocksmith aggregate devices, and runs `doctor`.
+
+For a manual install, `install-local` copies the HAL bundle into `/Library/Audio/Plug-Ins/HAL`, installs the helper under `/usr/local/libexec`, enforces root-owned install permissions, and restarts `coreaudiod`.
 
 ```sh
 sudo make install-local
@@ -55,6 +63,7 @@ Launch Rocksmith 2014 after those devices are visible.
 
 ```sh
 ./build/bin/rocksmith_bridge_ctl list-inputs
+./build/bin/rocksmith_bridge_ctl choose-source
 ./build/bin/rocksmith_bridge_ctl set-source DEVICE_UID CHANNEL
 ./build/bin/rocksmith_bridge_ctl get-config
 ./build/bin/rocksmith_bridge_ctl set-buffers 64
@@ -88,10 +97,11 @@ MOTU M4 is only the built-in default because it is the original tested setup. Th
 Configure a different interface with its device UID and first channel:
 
 ```sh
+./build/bin/rocksmith_bridge_ctl choose-source
 ./build/bin/rocksmith_bridge_ctl set-source DEVICE_UID CHANNEL
 ```
 
-The current source model is an adjacent two-channel pair: `CHANNEL` feeds player 1 and `CHANNEL + 1` feeds player 2. For example, `set-source DEVICE_UID 3` captures interface inputs 3 and 4. Single-input devices are not supported by this two-player helper path yet.
+`choose-source` is the guided path and avoids copy-pasting long device UIDs. The current source model is an adjacent two-channel pair: `CHANNEL` feeds player 1 and `CHANNEL + 1` feeds player 2. For example, `set-source DEVICE_UID 3` captures interface inputs 3 and 4. Single-input devices are not supported by this two-player helper path yet.
 
 ## Latency and Buffers
 

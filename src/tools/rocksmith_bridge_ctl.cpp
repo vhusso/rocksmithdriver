@@ -9,6 +9,7 @@
 #include <cstring>
 #include <string>
 #include <sys/stat.h>
+#include <vector>
 
 namespace {
 
@@ -90,6 +91,24 @@ void listInputs() {
     }
 }
 
+const char* yesNo(bool value) {
+    return value ? "yes" : "no";
+}
+
+std::string readPrompt(const char* prompt) {
+    std::printf("%s", prompt);
+    std::fflush(stdout);
+    char buffer[256] = {};
+    if (std::fgets(buffer, sizeof(buffer), stdin) == nullptr) {
+        return {};
+    }
+    std::string value = buffer;
+    while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) {
+        value.pop_back();
+    }
+    return value;
+}
+
 void printConfig() {
     bool loaded = false;
     rsbridge::BridgeConfig config = loadConfigOrDefaults(&loaded);
@@ -163,6 +182,56 @@ bool requestRingLatency(UInt32 frames, bool noisy) {
 }
 
 void status() {
+    rsbridge::BridgeConfig config = loadConfigOrDefaults();
+    rsbridge::InputDeviceInfo sourceInfo = resolvedSource(config);
+    const UInt32 firstChannel = config.sourceUID.empty() ? 1 : config.sourceChannel;
+    const bool sourceReady = sourceInfo.id != kAudioObjectUnknown &&
+                             rsbridge::hasInputChannelRange(sourceInfo, firstChannel);
+    bool ringsReady = true;
+    bool helperActive = false;
+    double maxPeak = 0.0;
+    for (uint32_t player = 1; player <= rsbridge::kBridgePlayerCount; ++player) {
+        rsbridge::SharedRing ring;
+        if (!rsbridge::openSharedRingForPlayer(ring, player, false, nullptr, rsbridge::SharedRingAccess::readOnly)) {
+            ringsReady = false;
+            continue;
+        }
+        helperActive = helperActive || ring.header->heartbeat.load(std::memory_order_acquire) > 0;
+        const double peak = static_cast<double>(ring.header->inputPeakPpm.load(std::memory_order_acquire)) / 1000000.0;
+        if (peak > maxPeak) {
+            maxPeak = peak;
+        }
+        rsbridge::closeSharedRing(ring);
+    }
+
+    bool virtualReady = true;
+    const CFStringRef summaryVirtualUIDs[] = {kVirtualDeviceUID, kVirtualDevice2UID};
+    for (CFStringRef uid : summaryVirtualUIDs) {
+        AudioObjectID source = rsbridge::deviceForUID(uid);
+        virtualReady = virtualReady && source != kAudioObjectUnknown &&
+                       rsbridge::channelCount(source, kAudioObjectPropertyScopeInput) == 1;
+    }
+    bool aggregateReady = true;
+    const CFStringRef summaryAggregateUIDs[] = {kAggregateUID, kAggregate2UID};
+    for (CFStringRef uid : summaryAggregateUIDs) {
+        AudioObjectID aggregate = rsbridge::deviceForUID(uid);
+        aggregateReady = aggregateReady && aggregate != kAudioObjectUnknown &&
+                         rsbridge::channelCount(aggregate, kAudioObjectPropertyScopeInput) == 1;
+    }
+    const bool ready = fileExists(kInstalledDriverPath) && sourceReady && ringsReady &&
+                       helperActive && virtualReady && aggregateReady;
+    std::printf("ready: %s\n", yesNo(ready));
+    std::printf("source: %s\n", sourceReady ? sourceInfo.name.c_str() : "unavailable");
+    if (sourceReady) {
+        std::printf("source-channels: %u-%u\n", firstChannel, firstChannel + rsbridge::kBridgePlayerCount - 1);
+    }
+    std::printf("buffers: source=%u bridge=%u virtual=%u\n",
+                config.sourceBufferFrames, config.targetLatencyFrames, config.virtualBufferFrames);
+    std::printf("helper: %s\n", helperActive ? "streaming" : "not streaming");
+    std::printf("virtual-sources: %s\n", yesNo(virtualReady));
+    std::printf("rocksmith-aggregates: %s\n", yesNo(aggregateReady));
+    std::printf("input-level: %.4f\n\n", maxPeak);
+
     for (uint32_t player = 1; player <= 2; ++player) {
         rsbridge::SharedRing ring;
         rsbridge::SharedRingOpenError error = rsbridge::SharedRingOpenError::none;
@@ -278,6 +347,47 @@ void setSource(const char* uid, const char* rawChannel) {
                 info.name.c_str(),
                 channel,
                 channel + rsbridge::kBridgePlayerCount - 1);
+}
+
+void chooseSource() {
+    std::vector<rsbridge::InputDeviceInfo> devices = rsbridge::inputDevices();
+    std::vector<rsbridge::InputDeviceInfo> eligible;
+    for (const auto& device : devices) {
+        if (device.inputChannels >= rsbridge::kBridgePlayerCount) {
+            eligible.push_back(device);
+        }
+    }
+    if (eligible.empty()) {
+        std::fprintf(stderr, "No input device has the required adjacent channel pair.\n");
+        std::exit(2);
+    }
+
+    std::printf("Input devices with at least %u channels:\n", rsbridge::kBridgePlayerCount);
+    for (size_t i = 0; i < eligible.size(); ++i) {
+        const auto& device = eligible[i];
+        std::printf("  %zu. %s  channels:%u  rate:%.0f\n",
+                    i + 1, device.name.c_str(), device.inputChannels, device.nominalSampleRate);
+        std::printf("     %s\n", device.uid.c_str());
+    }
+
+    std::string rawDevice = readPrompt("Device number: ");
+    UInt32 deviceIndex = parseUIntArg(rawDevice.c_str(), 1, static_cast<UInt32>(eligible.size()), "device number");
+    const auto& selected = eligible[deviceIndex - 1];
+
+    std::string rawChannel = readPrompt("First channel for player 1 [1]: ");
+    UInt32 channel = rawChannel.empty() ? 1 : parseUIntArg(rawChannel.c_str(), 1, selected.inputChannels, "channel");
+    if (!rsbridge::hasInputChannelRange(selected, channel)) {
+        std::fprintf(stderr, "%s has %u input channels; channels %u-%u are invalid.\n",
+                     selected.name.c_str(), selected.inputChannels, channel, channel + rsbridge::kBridgePlayerCount - 1);
+        std::exit(64);
+    }
+
+    rsbridge::BridgeConfig config = loadConfigOrDefaults();
+    config.sourceUID = selected.uid;
+    config.sourceChannel = channel;
+    saveConfigOrExit(config);
+    std::printf("Set source to %s channels %u-%u\n",
+                selected.name.c_str(), channel, channel + rsbridge::kBridgePlayerCount - 1);
 }
 
 void destroyAggregateIfPresent(CFStringRef uid) {
@@ -441,6 +551,7 @@ void usage(const char* argv0) {
                  "Usage: %s COMMAND\n"
                  "Commands:\n"
                  "  list-inputs\n"
+                 "  choose-source\n"
                  "  set-source DEVICE_UID CHANNEL\n"
                  "  get-config\n"
                  "  set-buffers FRAMES\n"
@@ -465,6 +576,12 @@ int main(int argc, char** argv) {
             return 64;
         }
         listInputs();
+    } else if (std::strcmp(argv[1], "choose-source") == 0) {
+        if (argc != 2) {
+            usage(argv[0]);
+            return 64;
+        }
+        chooseSource();
     } else if (std::strcmp(argv[1], "set-source") == 0) {
         if (argc != 4) {
             usage(argv[0]);
