@@ -39,7 +39,7 @@ The easiest local setup path is:
 make setup-local
 ```
 
-That runs the local quality gate, installs the HAL bundle and helper, loads the launch agent, applies the known-good `64` frame buffers, repairs the Rocksmith aggregate devices, and runs `doctor`.
+That runs the local quality gate, installs the HAL bundle and helper, loads the launch agent, applies the known-good `64` frame buffers, repairs the player 1 Rocksmith aggregate device, and runs `doctor`.
 
 For a manual install, `install-local` copies the HAL bundle into `/Library/Audio/Plug-Ins/HAL`, installs the helper under `/usr/local/libexec`, enforces root-owned install permissions, and restarts `coreaudiod`.
 
@@ -53,11 +53,9 @@ sudo make install-local
 Then open Audio MIDI Setup and verify:
 
 - `Rocksmith MOTU Bridge Source 1` exists and has 1 input channel.
-- `Rocksmith MOTU Bridge Source 2` exists and has 1 input channel.
 - `Rocksmith USB Guitar Adapter 1` exists and has 1 input channel.
-- `Rocksmith USB Guitar Adapter 2` exists and has 1 input channel.
 
-Launch Rocksmith 2014 after those devices are visible.
+Launch Rocksmith 2014 after those devices are visible. Two-player aggregate creation is available separately with `repair-aggregate-all`, but the default setup keeps player 1 only because that is the stable Rocksmith test path.
 
 ## Useful Commands
 
@@ -72,6 +70,7 @@ Launch Rocksmith 2014 after those devices are visible.
 ./build/bin/rocksmith_bridge_ctl set-bridge-latency 16
 ./build/bin/rocksmith_bridge_ctl set-virtual-buffer 16
 ./build/bin/rocksmith_bridge_ctl repair-aggregate
+./build/bin/rocksmith_bridge_ctl repair-aggregate-all
 ./build/bin/rocksmith_bridge_ctl destroy-aggregate
 tail -f ~/Library/Logs/RocksmithMotuBridge/helper.err
 ```

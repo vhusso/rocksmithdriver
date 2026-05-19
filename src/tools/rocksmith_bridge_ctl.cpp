@@ -204,20 +204,12 @@ void status() {
         rsbridge::closeSharedRing(ring);
     }
 
-    bool virtualReady = true;
-    const CFStringRef summaryVirtualUIDs[] = {kVirtualDeviceUID, kVirtualDevice2UID};
-    for (CFStringRef uid : summaryVirtualUIDs) {
-        AudioObjectID source = rsbridge::deviceForUID(uid);
-        virtualReady = virtualReady && source != kAudioObjectUnknown &&
-                       rsbridge::channelCount(source, kAudioObjectPropertyScopeInput) == 1;
-    }
-    bool aggregateReady = true;
-    const CFStringRef summaryAggregateUIDs[] = {kAggregateUID, kAggregate2UID};
-    for (CFStringRef uid : summaryAggregateUIDs) {
-        AudioObjectID aggregate = rsbridge::deviceForUID(uid);
-        aggregateReady = aggregateReady && aggregate != kAudioObjectUnknown &&
-                         rsbridge::channelCount(aggregate, kAudioObjectPropertyScopeInput) == 1;
-    }
+    AudioObjectID virtualSource1 = rsbridge::deviceForUID(kVirtualDeviceUID);
+    const bool virtualReady = virtualSource1 != kAudioObjectUnknown &&
+                              rsbridge::channelCount(virtualSource1, kAudioObjectPropertyScopeInput) == 1;
+    AudioObjectID aggregate1 = rsbridge::deviceForUID(kAggregateUID);
+    const bool aggregateReady = aggregate1 != kAudioObjectUnknown &&
+                                rsbridge::channelCount(aggregate1, kAudioObjectPropertyScopeInput) == 1;
     const bool ready = fileExists(kInstalledDriverPath) && sourceReady && ringsReady &&
                        helperActive && virtualReady && aggregateReady;
     std::printf("ready: %s\n", yesNo(ready));
@@ -228,8 +220,8 @@ void status() {
     std::printf("buffers: source=%u bridge=%u virtual=%u\n",
                 config.sourceBufferFrames, config.targetLatencyFrames, config.virtualBufferFrames);
     std::printf("helper: %s\n", helperActive ? "streaming" : "not streaming");
-    std::printf("virtual-sources: %s\n", yesNo(virtualReady));
-    std::printf("rocksmith-aggregates: %s\n", yesNo(aggregateReady));
+    std::printf("virtual-source-1: %s\n", yesNo(virtualReady));
+    std::printf("rocksmith-aggregate-1: %s\n", yesNo(aggregateReady));
     std::printf("input-level: %.4f\n\n", maxPeak);
 
     for (uint32_t player = 1; player <= 2; ++player) {
@@ -447,7 +439,12 @@ void createOneAggregate(CFStringRef sourceUID, CFStringRef aggregateUID, CFStrin
     CFRelease(subDevice);
 }
 
-void createAggregates() {
+void createPlayerOneAggregate() {
+    destroyAggregateIfPresent(kAggregateUID);
+    createOneAggregate(kVirtualDeviceUID, kAggregateUID, kAggregateName);
+}
+
+void createAllAggregates() {
     destroyAggregatesIfPresent();
     createOneAggregate(kVirtualDeviceUID, kAggregateUID, kAggregateName);
     createOneAggregate(kVirtualDevice2UID, kAggregate2UID, kAggregate2Name);
@@ -476,21 +473,24 @@ void doctor() {
         char fail[128];
         std::snprintf(ok, sizeof(ok), "virtual source %d is visible", i + 1);
         std::snprintf(fail, sizeof(fail), "virtual source %d is missing; restart coreaudiod after installing", i + 1);
-        healthy &= doctorCheck(source != kAudioObjectUnknown, ok, fail);
+        healthy &= doctorCheck(source != kAudioObjectUnknown, ok, fail, i > 0);
         if (source != kAudioObjectUnknown) {
             std::snprintf(ok, sizeof(ok), "virtual source %d reports 1 input channel", i + 1);
             std::snprintf(fail, sizeof(fail), "virtual source %d does not report exactly 1 input channel", i + 1);
-            healthy &= doctorCheck(rsbridge::channelCount(source, kAudioObjectPropertyScopeInput) == 1, ok, fail);
+            healthy &= doctorCheck(rsbridge::channelCount(source, kAudioObjectPropertyScopeInput) == 1, ok, fail, i > 0);
         }
 
         AudioObjectID aggregate = rsbridge::deviceForUID(aggregateUIDs[i]);
         std::snprintf(ok, sizeof(ok), "Rocksmith aggregate %d is visible", i + 1);
         std::snprintf(fail, sizeof(fail), "Rocksmith aggregate %d is missing; run rocksmith_bridge_ctl repair-aggregate", i + 1);
-        healthy &= doctorCheck(aggregate != kAudioObjectUnknown, ok, fail);
+        if (i > 0) {
+            std::snprintf(fail, sizeof(fail), "Rocksmith aggregate %d is missing; run repair-aggregate-all for two-player setup", i + 1);
+        }
+        healthy &= doctorCheck(aggregate != kAudioObjectUnknown, ok, fail, i > 0);
         if (aggregate != kAudioObjectUnknown) {
             std::snprintf(ok, sizeof(ok), "Rocksmith aggregate %d reports 1 input channel", i + 1);
             std::snprintf(fail, sizeof(fail), "Rocksmith aggregate %d does not report exactly 1 input channel", i + 1);
-            healthy &= doctorCheck(rsbridge::channelCount(aggregate, kAudioObjectPropertyScopeInput) == 1, ok, fail);
+            healthy &= doctorCheck(rsbridge::channelCount(aggregate, kAudioObjectPropertyScopeInput) == 1, ok, fail, i > 0);
         }
     }
 
@@ -559,7 +559,7 @@ void usage(const char* argv0) {
                  "  status\n"
                  "  set-bridge-latency FRAMES\n"
                  "  set-virtual-buffer FRAMES\n"
-                 "  repair-aggregate | create-aggregate | destroy-aggregate\n",
+                 "  repair-aggregate | create-aggregate | repair-aggregate-all | destroy-aggregate\n",
                  argv0);
 }
 
@@ -629,7 +629,13 @@ int main(int argc, char** argv) {
             usage(argv[0]);
             return 64;
         }
-        createAggregates();
+        createPlayerOneAggregate();
+    } else if (std::strcmp(argv[1], "repair-aggregate-all") == 0) {
+        if (argc != 2) {
+            usage(argv[0]);
+            return 64;
+        }
+        createAllAggregates();
     } else if (std::strcmp(argv[1], "destroy-aggregate") == 0) {
         if (argc != 2) {
             usage(argv[0]);
