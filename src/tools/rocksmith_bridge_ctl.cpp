@@ -143,7 +143,7 @@ bool requestVirtualBufferFrames(UInt32 frames, bool noisy) {
 
 bool requestRingLatency(UInt32 frames, bool noisy) {
     bool any = false;
-    for (uint32_t player = 1; player <= 2; ++player) {
+    for (uint32_t player = 1; player <= rsbridge::kBridgePlayerCount; ++player) {
         rsbridge::SharedRing ring;
         rsbridge::SharedRingOpenError error = rsbridge::SharedRingOpenError::none;
         errno = 0;
@@ -200,7 +200,7 @@ void status() {
 
     const CFStringRef virtualUIDs[] = {kVirtualDeviceUID, kVirtualDevice2UID};
     const char* virtualLabels[] = {"virtual-source-1", "virtual-source-2"};
-    for (int i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < rsbridge::kBridgePlayerCount; ++i) {
         AudioObjectID source = rsbridge::deviceForUID(virtualUIDs[i]);
         std::printf("%s: %s\n", virtualLabels[i], source == kAudioObjectUnknown ? "missing" : "visible");
         if (source != kAudioObjectUnknown) {
@@ -210,7 +210,7 @@ void status() {
     }
     const CFStringRef aggregateUIDs[] = {kAggregateUID, kAggregate2UID};
     const char* aggregateLabels[] = {"rocksmith-aggregate-1", "rocksmith-aggregate-2"};
-    for (int i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < rsbridge::kBridgePlayerCount; ++i) {
         AudioObjectID aggregate = rsbridge::deviceForUID(aggregateUIDs[i]);
         std::printf("%s: %s\n", aggregateLabels[i], aggregate == kAudioObjectUnknown ? "missing" : "visible");
         if (aggregate != kAudioObjectUnknown) {
@@ -265,16 +265,19 @@ void setSource(const char* uid, const char* rawChannel) {
         std::fprintf(stderr, "Input device UID not found: %s\n", uid);
         std::exit(2);
     }
-    if (channel + 1 > info.inputChannels) {
+    if (!rsbridge::hasInputChannelRange(info, channel)) {
         std::fprintf(stderr, "%s has %u input channels; channels %u-%u are invalid.\n",
-                     info.name.c_str(), info.inputChannels, channel, channel + 1);
+                     info.name.c_str(), info.inputChannels, channel, channel + rsbridge::kBridgePlayerCount - 1);
         std::exit(64);
     }
     rsbridge::BridgeConfig config = loadConfigOrDefaults();
     config.sourceUID = uid;
     config.sourceChannel = channel;
     saveConfigOrExit(config);
-    std::printf("Set source to %s channels %u-%u\n", info.name.c_str(), channel, channel + 1);
+    std::printf("Set source to %s channels %u-%u\n",
+                info.name.c_str(),
+                channel,
+                channel + rsbridge::kBridgePlayerCount - 1);
 }
 
 void destroyAggregateIfPresent(CFStringRef uid) {
@@ -357,7 +360,7 @@ void doctor() {
 
     const CFStringRef virtualUIDs[] = {kVirtualDeviceUID, kVirtualDevice2UID};
     const CFStringRef aggregateUIDs[] = {kAggregateUID, kAggregate2UID};
-    for (int i = 0; i < 2; ++i) {
+    for (uint32_t i = 0; i < rsbridge::kBridgePlayerCount; ++i) {
         AudioObjectID source = rsbridge::deviceForUID(virtualUIDs[i]);
         char ok[96];
         char fail[128];
@@ -390,17 +393,21 @@ void doctor() {
                            config.sourceUID.empty() ? "MOTU M4 auto-detect did not find an input device"
                                                     : "configured input source is unavailable");
     if (selected.id != kAudioObjectUnknown) {
+        UInt32 firstChannel = config.sourceUID.empty() ? 1 : config.sourceChannel;
+        healthy &= doctorCheck(rsbridge::hasInputChannelRange(selected, firstChannel),
+                               "configured input channel pair is valid",
+                               "configured input channel pair is invalid");
         std::printf("[info] source: %s channels %u-%u, channels:%u, rate:%.0f\n",
                     selected.name.c_str(),
-                    config.sourceUID.empty() ? 1 : config.sourceChannel,
-                    (config.sourceUID.empty() ? 1 : config.sourceChannel) + 1,
+                    firstChannel,
+                    firstChannel + rsbridge::kBridgePlayerCount - 1,
                     selected.inputChannels,
                     selected.nominalSampleRate);
     }
     std::printf("[info] buffers: source=%u bridge=%u virtual=%u\n",
                 config.sourceBufferFrames, config.targetLatencyFrames, config.virtualBufferFrames);
 
-    for (uint32_t player = 1; player <= 2; ++player) {
+    for (uint32_t player = 1; player <= rsbridge::kBridgePlayerCount; ++player) {
         rsbridge::SharedRing ring;
         rsbridge::SharedRingOpenError error = rsbridge::SharedRingOpenError::none;
         errno = 0;

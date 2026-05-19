@@ -28,7 +28,7 @@ sudo make install-local
 
 Then open Audio MIDI Setup and verify:
 
-- `Rocksmith MOTU Bridge Source` exists and has 1 input channel.
+- `Rocksmith MOTU Bridge Source 1` exists and has 1 input channel.
 - `Rocksmith MOTU Bridge Source 2` exists and has 1 input channel.
 - `Rocksmith USB Guitar Adapter 1` exists and has 1 input channel.
 - `Rocksmith USB Guitar Adapter 2` exists and has 1 input channel.
@@ -129,10 +129,10 @@ The difference between those two numbers is the bridge-side cost. For the full b
 ## Uninstall
 
 ```sh
-./scripts/uninstall_local.sh
+sudo ./scripts/uninstall_local.sh
 ```
 
-The uninstall script uses `trash` for local removals, then restarts `coreaudiod`.
+The uninstall script uses `trash` for removals, unloads the launch agent, removes the installed helper and HAL bundle, then restarts `coreaudiod`.
 
 ## Notes
 

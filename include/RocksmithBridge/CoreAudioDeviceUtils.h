@@ -41,6 +41,9 @@ inline uint32_t channelCount(AudioObjectID deviceID, AudioObjectPropertyScope sc
         return 0;
     }
     auto* list = static_cast<AudioBufferList*>(std::calloc(1, size));
+    if (list == nullptr) {
+        return 0;
+    }
     status = AudioObjectGetPropertyData(deviceID, &address, 0, nullptr, &size, list);
     uint32_t channels = 0;
     if (status == noErr) {
@@ -146,6 +149,12 @@ inline InputDeviceInfo infoForDevice(AudioObjectID deviceID) {
     info.inputChannels = channelCount(deviceID, kAudioObjectPropertyScopeInput);
     info.nominalSampleRate = nominalSampleRate(deviceID);
     return info;
+}
+
+inline bool hasInputChannelRange(const InputDeviceInfo& info, uint32_t firstChannel,
+                                 uint32_t channelCount = kBridgePlayerCount) {
+    return firstChannel > 0 && channelCount > 0 && info.inputChannels >= firstChannel &&
+           info.inputChannels - firstChannel + 1 >= channelCount;
 }
 
 } // namespace rsbridge

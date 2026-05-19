@@ -7,6 +7,8 @@ DRIVER_BIN := $(DRIVER_BUNDLE)/Contents/MacOS/RocksmithMotuBridge
 HELPER_BIN := $(BUILD_DIR)/bin/RocksmithBridgeHelper
 CTL_BIN := $(BUILD_DIR)/bin/rocksmith_bridge_ctl
 RTL_BIN := $(BUILD_DIR)/bin/rocksmith_bridge_rtl
+HAL_INSTALL_DIR := /Library/Audio/Plug-Ins/HAL
+HELPER_INSTALL_DIR := /usr/local/libexec/RocksmithMotuBridge
 
 .PHONY: all driver helper ctl rtl bundle sign verify test clean install-local create-aggregate
 
@@ -50,12 +52,15 @@ sign: $(DRIVER_BIN)
 verify: all
 	codesign --verify --verbose=2 "$(DRIVER_BUNDLE)"
 	plutil -lint packaging/Info.plist packaging/com.vhusso.rocksmithbridge.helper.plist "$(DRIVER_BUNDLE)/Contents/Info.plist"
+	zsh -n scripts/install_launch_agent.sh
+	zsh -n scripts/uninstall_local.sh
 
 test: verify
 
 install-local: all
-	install -d "/Library/Audio/Plug-Ins/HAL"
-	cp -R "$(DRIVER_BUNDLE)" "/Library/Audio/Plug-Ins/HAL/"
+	install -d "$(HAL_INSTALL_DIR)" "$(HELPER_INSTALL_DIR)"
+	ditto "$(DRIVER_BUNDLE)" "$(HAL_INSTALL_DIR)/RocksmithMotuBridge.driver"
+	install -m 0755 "$(HELPER_BIN)" "$(HELPER_INSTALL_DIR)/RocksmithBridgeHelper"
 	killall coreaudiod
 
 create-aggregate: ctl

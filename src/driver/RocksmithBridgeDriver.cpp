@@ -13,7 +13,7 @@
 
 namespace {
 
-constexpr UInt32 kPlayerCount = 2;
+constexpr UInt32 kPlayerCount = rsbridge::kBridgePlayerCount;
 constexpr AudioObjectID kDeviceObjectIDs[kPlayerCount] = {2, 4};
 constexpr AudioObjectID kStreamObjectIDs[kPlayerCount] = {3, 5};
 const CFStringRef kBundleID = CFSTR("com.vhusso.rocksmithbridge.driver");
@@ -64,6 +64,11 @@ AudioStreamBasicDescription gInt16Format = {
 AudioStreamBasicDescription gCurrentFormat[kPlayerCount] = {gFloatFormat, gFloatFormat};
 
 ULONG STDMETHODCALLTYPE AddRef(void*);
+void notifyPropertyChanged(AudioObjectID objectID, const AudioObjectPropertyAddress& address) {
+    if (gHost != nullptr && gHost->PropertiesChanged != nullptr) {
+        gHost->PropertiesChanged(gHost, objectID, 1, &address);
+    }
+}
 
 CFUUIDRef factoryUUID() {
     return CFUUIDGetConstantUUIDWithBytes(nullptr,
@@ -312,8 +317,14 @@ OSStatus STDMETHODCALLTYPE IsPropertySettable(AudioServerPlugInDriverRef driver,
 
 OSStatus propertyDataSize(AudioObjectID objectID, const AudioObjectPropertyAddress* address,
                           UInt32 qualifierSize, const void* qualifierData, UInt32* outDataSize) {
-    if (outDataSize == nullptr || address == nullptr || !hasObject(objectID)) {
+    if (outDataSize == nullptr || address == nullptr) {
+        return kAudioHardwareBadPropertySizeError;
+    }
+    if (!hasObject(objectID)) {
         return kAudioHardwareBadObjectError;
+    }
+    if (!HasProperty(nullptr, objectID, 0, address)) {
+        return kAudioHardwareUnknownPropertyError;
     }
     switch (address->mSelector) {
         case kAudioObjectPropertyName:
@@ -408,6 +419,12 @@ OSStatus STDMETHODCALLTYPE GetPropertyData(AudioServerPlugInDriverRef, AudioObje
                                           void* outData) {
     if (address == nullptr || outDataSize == nullptr || outData == nullptr) {
         return kAudioHardwareBadPropertySizeError;
+    }
+    if (!hasObject(objectID)) {
+        return kAudioHardwareBadObjectError;
+    }
+    if (!HasProperty(nullptr, objectID, 0, address)) {
+        return kAudioHardwareUnknownPropertyError;
     }
 
     switch (address->mSelector) {
@@ -571,6 +588,7 @@ OSStatus STDMETHODCALLTYPE SetPropertyData(AudioServerPlugInDriverRef, AudioObje
                 rsbridge::setTargetLatencyFrames(gRings[devicePlayer], requested);
             }
         }
+        notifyPropertyChanged(objectID, *address);
         return kAudioHardwareNoError;
     }
     if (streamPlayer >= 0 &&
@@ -583,6 +601,7 @@ OSStatus STDMETHODCALLTYPE SetPropertyData(AudioServerPlugInDriverRef, AudioObje
             return kAudioDeviceUnsupportedFormatError;
         }
         gCurrentFormat[streamPlayer] = requested;
+        notifyPropertyChanged(objectID, *address);
         return kAudioHardwareNoError;
     }
     return kAudioHardwareUnsupportedOperationError;

@@ -20,8 +20,8 @@ constexpr UInt32 kMaxCaptureFrames = 16384;
 struct CaptureSession {
     AudioUnit unit = nullptr;
     AudioBufferList* bufferList = nullptr;
-    rsbridge::SharedRing rings[2];
-    float* splitBuffers[2] = {nullptr, nullptr};
+    rsbridge::SharedRing rings[rsbridge::kBridgePlayerCount];
+    float* splitBuffers[rsbridge::kBridgePlayerCount] = {};
     std::atomic<OSStatus> renderError{noErr};
 };
 
@@ -150,10 +150,10 @@ SourceSelection resolveSource(const rsbridge::BridgeConfig& config) {
     if (selection.deviceID == kAudioObjectUnknown || selection.info.inputChannels == 0) {
         return {};
     }
-    if (selection.channel == 0 || selection.channel + 1 > selection.info.inputChannels) {
+    if (!rsbridge::hasInputChannelRange(selection.info, selection.channel)) {
         std::fprintf(stderr, "Configured channels %u-%u are invalid for %s (%u input channels).\n",
                      selection.channel,
-                     selection.channel + 1,
+                     selection.channel + rsbridge::kBridgePlayerCount - 1,
                      selection.info.name.c_str(), selection.info.inputChannels);
         return {};
     }
@@ -179,7 +179,9 @@ OSStatus inputCallback(void* refCon, AudioUnitRenderActionFlags* flags, const Au
             session->splitBuffers[1][i] = input[i * 2 + 1];
         }
         rsbridge::writeMonoFrames(session->rings[0], session->splitBuffers[0], frameCount);
-        rsbridge::writeMonoFrames(session->rings[1], session->splitBuffers[1], frameCount);
+        if (rsbridge::kBridgePlayerCount > 1) {
+            rsbridge::writeMonoFrames(session->rings[1], session->splitBuffers[1], frameCount);
+        }
     } else {
         session->renderError.store(status, std::memory_order_relaxed);
     }
@@ -251,12 +253,22 @@ bool configureCapture(CaptureSession& session, const SourceSelection& source, UI
     }
 
     session.bufferList = static_cast<AudioBufferList*>(std::calloc(1, sizeof(AudioBufferList)));
+    if (session.bufferList == nullptr) {
+        std::fprintf(stderr, "Unable to allocate capture buffer list\n");
+        return false;
+    }
     session.bufferList->mNumberBuffers = 1;
     session.bufferList->mBuffers[0].mNumberChannels = 2;
     session.bufferList->mBuffers[0].mDataByteSize = kMaxCaptureFrames * 2 * sizeof(float);
     session.bufferList->mBuffers[0].mData = std::calloc(kMaxCaptureFrames * 2, sizeof(float));
-    session.splitBuffers[0] = static_cast<float*>(std::calloc(kMaxCaptureFrames, sizeof(float)));
-    session.splitBuffers[1] = static_cast<float*>(std::calloc(kMaxCaptureFrames, sizeof(float)));
+    for (uint32_t player = 0; player < rsbridge::kBridgePlayerCount; ++player) {
+        session.splitBuffers[player] = static_cast<float*>(std::calloc(kMaxCaptureFrames, sizeof(float)));
+    }
+    if (session.bufferList->mBuffers[0].mData == nullptr || session.splitBuffers[0] == nullptr ||
+        session.splitBuffers[1] == nullptr) {
+        std::fprintf(stderr, "Unable to allocate capture buffers\n");
+        return false;
+    }
 
     status = AudioUnitInitialize(session.unit);
     if (status != noErr) {
@@ -278,16 +290,15 @@ void cleanup(CaptureSession& session) {
         std::free(session.bufferList);
         session.bufferList = nullptr;
     }
-    std::free(session.splitBuffers[0]);
-    std::free(session.splitBuffers[1]);
-    session.splitBuffers[0] = nullptr;
-    session.splitBuffers[1] = nullptr;
-    rsbridge::closeSharedRing(session.rings[0]);
-    rsbridge::closeSharedRing(session.rings[1]);
+    for (uint32_t player = 0; player < rsbridge::kBridgePlayerCount; ++player) {
+        std::free(session.splitBuffers[player]);
+        session.splitBuffers[player] = nullptr;
+        rsbridge::closeSharedRing(session.rings[player]);
+    }
 }
 
 bool ensureRing(UInt32 targetLatencyFrames) {
-    for (uint32_t player = 1; player <= 2; ++player) {
+    for (uint32_t player = 1; player <= rsbridge::kBridgePlayerCount; ++player) {
         rsbridge::SharedRing ring;
         if (!rsbridge::openSharedRingForPlayer(ring, player, true)) {
             std::fprintf(stderr, "Unable to open shared ring buffer for player %u\n", player);
@@ -332,8 +343,14 @@ int main() {
         }
 
         CaptureSession session;
-        if (!rsbridge::openSharedRingForPlayer(session.rings[0], 1, false) ||
-            !rsbridge::openSharedRingForPlayer(session.rings[1], 2, false)) {
+        bool ringsReady = true;
+        for (uint32_t player = 1; player <= rsbridge::kBridgePlayerCount; ++player) {
+            if (!rsbridge::openSharedRingForPlayer(session.rings[player - 1], player, false)) {
+                ringsReady = false;
+                break;
+            }
+        }
+        if (!ringsReady) {
             logTransition(lastWaitMessage, "Shared ring disappeared; retrying.");
             cleanup(session);
             std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -353,8 +370,10 @@ int main() {
             continue;
         }
 
-        std::fprintf(stderr, "Streaming %s channels %u and %u at 48 kHz mono.\n",
-                     source.info.name.c_str(), source.channel, source.channel + 1);
+        std::fprintf(stderr, "Streaming %s channels %u-%u at 48 kHz mono.\n",
+                     source.info.name.c_str(),
+                     source.channel,
+                     source.channel + rsbridge::kBridgePlayerCount - 1);
         lastWaitMessage.clear();
 
         rsbridge::BridgeConfig activeConfig = config;
@@ -365,8 +384,9 @@ int main() {
                 std::fprintf(stderr, "Config changed; reconnecting capture.\n");
                 break;
             }
-            rsbridge::setTargetLatencyFrames(session.rings[0], nextConfig.targetLatencyFrames);
-            rsbridge::setTargetLatencyFrames(session.rings[1], nextConfig.targetLatencyFrames);
+            for (uint32_t player = 0; player < rsbridge::kBridgePlayerCount; ++player) {
+                rsbridge::setTargetLatencyFrames(session.rings[player], nextConfig.targetLatencyFrames);
+            }
             requestVirtualBufferFrames(nextConfig.virtualBufferFrames);
         }
 
