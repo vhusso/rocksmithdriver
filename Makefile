@@ -8,7 +8,7 @@ HELPER_BIN := $(BUILD_DIR)/bin/RocksmithBridgeHelper
 CTL_BIN := $(BUILD_DIR)/bin/rocksmith_bridge_ctl
 RTL_BIN := $(BUILD_DIR)/bin/rocksmith_bridge_rtl
 
-.PHONY: all driver helper ctl rtl bundle sign clean install-local create-aggregate
+.PHONY: all driver helper ctl rtl bundle sign verify test clean install-local create-aggregate
 
 all: bundle helper ctl rtl
 
@@ -46,6 +46,12 @@ $(RTL_BIN): src/tools/rocksmith_bridge_rtl.cpp include/RocksmithBridge/Config.h 
 
 sign: $(DRIVER_BIN)
 	codesign --force --sign - "$(DRIVER_BUNDLE)"
+
+verify: all
+	codesign --verify --verbose=2 "$(DRIVER_BUNDLE)"
+	plutil -lint packaging/Info.plist packaging/com.vhusso.rocksmithbridge.helper.plist "$(DRIVER_BUNDLE)/Contents/Info.plist"
+
+test: verify
 
 install-local: all
 	install -d "/Library/Audio/Plug-Ins/HAL"

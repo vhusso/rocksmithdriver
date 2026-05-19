@@ -1,0 +1,13 @@
+{
+  "C_Cpp.default.cppStandard": "c++20",
+  "C_Cpp.default.includePath": [
+    "${workspaceFolder}/include"
+  ],
+  "C_Cpp.default.macFrameworkPath": [
+    "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks"
+  ],
+  "editor.formatOnSave": false,
+  "files.associations": {
+    "*.inc": "cpp"
+  }
+}

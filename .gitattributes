@@ -1,0 +1,15 @@
+* text=auto eol=lf
+
+*.h text eol=lf
+*.cpp text eol=lf
+*.inc text eol=lf
+*.md text eol=lf
+*.plist text eol=lf
+*.sh text eol=lf
+Makefile text eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary

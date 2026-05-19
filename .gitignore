@@ -1,3 +1,37 @@
+# Build artifacts
 build/
+DerivedData/
 *.dSYM/
+*.o
+*.a
+*.dylib
+*.so
+*.driver
+
+# macOS metadata
 .DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Editor and local tooling state
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Local logs and diagnostics
+*.log
+*.trace
+*.profraw
+*.profdata
+
+# Local signing/notarization material
+*.cer
+*.p12
+*.mobileprovision
+*.entitlements.local
