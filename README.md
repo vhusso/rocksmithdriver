@@ -1,6 +1,6 @@
-# Rocksmith MOTU Input Bridge
+# Rocksmith Audio Input Bridge
 
-Local macOS Core Audio bridge for using MOTU M4 inputs as Rocksmith 2014 cable-like inputs. It defaults to MOTU M4 input 1 for player 1 and input 2 for player 2 when no config exists.
+Local macOS Core Audio bridge for using an audio-interface input as Rocksmith 2014 cable-like inputs. It defaults to MOTU M4 input 1 for player 1 and input 2 for player 2 when no config exists, but it can be configured for any Core Audio input device with at least two adjacent input channels.
 
 The project has four pieces:
 
@@ -76,6 +76,22 @@ Config lives at:
 ```
 
 Use `set-source` only when you want something other than the automatic MOTU M4 input 1/2 default. Use the UID printed by `list-inputs`; the channel argument is the first channel in the pair, so `set-source DEVICE_UID 1` captures channels 1 and 2.
+
+## Other Audio Interfaces
+
+MOTU M4 is only the built-in default because it is the original tested setup. The helper can capture from any Core Audio input device listed by:
+
+```sh
+./build/bin/rocksmith_bridge_ctl list-inputs
+```
+
+Configure a different interface with its device UID and first channel:
+
+```sh
+./build/bin/rocksmith_bridge_ctl set-source DEVICE_UID CHANNEL
+```
+
+The current source model is an adjacent two-channel pair: `CHANNEL` feeds player 1 and `CHANNEL + 1` feeds player 2. For example, `set-source DEVICE_UID 3` captures interface inputs 3 and 4. Single-input devices are not supported by this two-player helper path yet.
 
 ## Latency and Buffers
 
