@@ -440,7 +440,7 @@ void createOneAggregate(CFStringRef sourceUID, CFStringRef aggregateUID, CFStrin
 }
 
 void createPlayerOneAggregate() {
-    destroyAggregateIfPresent(kAggregateUID);
+    destroyAggregatesIfPresent();
     createOneAggregate(kVirtualDeviceUID, kAggregateUID, kAggregateName);
 }
 
