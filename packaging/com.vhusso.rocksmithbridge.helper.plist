@@ -14,8 +14,8 @@
   <key>KeepAlive</key>
   <true/>
   <key>StandardErrorPath</key>
-  <string>/tmp/rocksmithbridge-helper.err</string>
+  <string>__HELPER_ERROR_LOG__</string>
   <key>StandardOutPath</key>
-  <string>/tmp/rocksmithbridge-helper.out</string>
+  <string>__HELPER_OUTPUT_LOG__</string>
 </dict>
 </plist>

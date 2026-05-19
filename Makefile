@@ -8,6 +8,7 @@ HELPER_BIN := $(BUILD_DIR)/bin/RocksmithBridgeHelper
 CTL_BIN := $(BUILD_DIR)/bin/rocksmith_bridge_ctl
 RTL_BIN := $(BUILD_DIR)/bin/rocksmith_bridge_rtl
 UNIT_TEST_BIN := $(BUILD_DIR)/bin/rocksmith_bridge_unit_tests
+RENDERED_LAUNCH_AGENT := $(BUILD_DIR)/com.vhusso.rocksmithbridge.helper.plist
 HAL_INSTALL_DIR := /Library/Audio/Plug-Ins/HAL
 HELPER_INSTALL_DIR := /usr/local/libexec/RocksmithMotuBridge
 
@@ -53,12 +54,18 @@ $(RTL_BIN): src/tools/rocksmith_bridge_rtl.cpp include/RocksmithBridge/Config.h 
 $(UNIT_TEST_BIN): tests/unit_tests.cpp include/RocksmithBridge/SharedRingBuffer.h include/RocksmithBridge/CoreAudioDeviceUtils.h include/RocksmithBridge/Config.h | $(BUILD_DIR)/bin
 	$(CXX) $(CXXFLAGS) -framework CoreAudio -framework CoreFoundation "$<" -o "$@"
 
+$(RENDERED_LAUNCH_AGENT): packaging/com.vhusso.rocksmithbridge.helper.plist | $(BUILD_DIR)/bin
+	sed -e "s#__HELPER_PATH__#$(HELPER_INSTALL_DIR)/RocksmithBridgeHelper#g" \
+	    -e "s#__HELPER_ERROR_LOG__#$(HOME)/Library/Logs/RocksmithMotuBridge/helper.err#g" \
+	    -e "s#__HELPER_OUTPUT_LOG__#$(HOME)/Library/Logs/RocksmithMotuBridge/helper.out#g" \
+	    "$<" > "$@"
+
 sign: $(DRIVER_BIN)
 	codesign --force --sign - "$(DRIVER_BUNDLE)"
 
-verify: all
+verify: all $(RENDERED_LAUNCH_AGENT)
 	codesign --verify --verbose=2 "$(DRIVER_BUNDLE)"
-	plutil -lint packaging/Info.plist packaging/com.vhusso.rocksmithbridge.helper.plist "$(DRIVER_BUNDLE)/Contents/Info.plist"
+	plutil -lint packaging/Info.plist packaging/com.vhusso.rocksmithbridge.helper.plist "$(RENDERED_LAUNCH_AGENT)" "$(DRIVER_BUNDLE)/Contents/Info.plist"
 	zsh -n scripts/install_launch_agent.sh
 	zsh -n scripts/uninstall_local.sh
 
@@ -67,9 +74,12 @@ test: verify unit-tests
 check: test
 
 install-local: all
-	install -d "$(HAL_INSTALL_DIR)" "$(HELPER_INSTALL_DIR)"
+	install -d -m 0755 "$(HAL_INSTALL_DIR)" "$(HELPER_INSTALL_DIR)"
 	ditto "$(DRIVER_BUNDLE)" "$(HAL_INSTALL_DIR)/RocksmithMotuBridge.driver"
 	install -m 0755 "$(HELPER_BIN)" "$(HELPER_INSTALL_DIR)/RocksmithBridgeHelper"
+	chown -R root:wheel "$(HAL_INSTALL_DIR)/RocksmithMotuBridge.driver" "$(HELPER_INSTALL_DIR)"
+	chmod -R go-w "$(HAL_INSTALL_DIR)/RocksmithMotuBridge.driver" "$(HELPER_INSTALL_DIR)"
+	chmod 0755 "$(HELPER_INSTALL_DIR)/RocksmithBridgeHelper"
 	killall coreaudiod
 
 create-aggregate: ctl

@@ -27,5 +27,5 @@ assignees: ""
 ./build/bin/rocksmith_bridge_ctl get-config
 ./build/bin/rocksmith_bridge_ctl status
 ./build/bin/rocksmith_bridge_ctl doctor
-tail -n 80 /tmp/rocksmithbridge-helper.err
+tail -n 80 ~/Library/Logs/RocksmithMotuBridge/helper.err
 ```

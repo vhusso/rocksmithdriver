@@ -30,12 +30,11 @@ std::atomic<UInt32> gRefCount{1};
 std::atomic<UInt32> gRunningClients[kPlayerCount];
 AudioServerPlugInHostRef gHost = nullptr;
 rsbridge::SharedRing gRings[kPlayerCount];
-uint64_t gReadFrame[kPlayerCount] = {};
-uint64_t gAnchorHostTime[kPlayerCount] = {};
-Float64 gAnchorSampleTime[kPlayerCount] = {};
-Float64 gHostTicksPerFrame = 0;
-UInt64 gTimestampSeed[kPlayerCount] = {1, 1};
-UInt32 gBufferFrameSize[kPlayerCount] = {rsbridge::kDefaultBufferFrames, rsbridge::kDefaultBufferFrames};
+std::atomic<uint64_t> gAnchorHostTime[kPlayerCount];
+std::atomic<Float64> gHostTicksPerFrame{0};
+std::atomic<UInt64> gTimestampSeed[kPlayerCount];
+std::atomic<UInt32> gBufferFrameSize[kPlayerCount];
+std::atomic<bool> gUseFloatFormat[kPlayerCount];
 
 AudioStreamBasicDescription gFloatFormat = {
     static_cast<Float64>(rsbridge::kSampleRate),
@@ -61,9 +60,15 @@ AudioStreamBasicDescription gInt16Format = {
     0
 };
 
-AudioStreamBasicDescription gCurrentFormat[kPlayerCount] = {gFloatFormat, gFloatFormat};
-
 ULONG STDMETHODCALLTYPE AddRef(void*);
+
+AudioStreamBasicDescription currentFormat(int player) { return gUseFloatFormat[player].load(std::memory_order_acquire) ? gFloatFormat : gInt16Format; }
+
+void refreshRing(UInt32 player) {
+    if (player >= kPlayerCount || gRings[player].valid() || gRunningClients[player].load(std::memory_order_acquire) > 0) { return; }
+    rsbridge::openSharedRingForPlayer(gRings[player], player + 1, false, nullptr, rsbridge::SharedRingAccess::readOnly);
+}
+
 void notifyPropertyChanged(AudioObjectID objectID, const AudioObjectPropertyAddress& address) {
     if (gHost != nullptr && gHost->PropertiesChanged != nullptr) {
         gHost->PropertiesChanged(gHost, objectID, 1, &address);
@@ -515,7 +520,8 @@ OSStatus STDMETHODCALLTYPE GetPropertyData(AudioServerPlugInDriverRef, AudioObje
         case kAudioDevicePropertyUsesVariableBufferFrameSizes:
             return writeScalar(inDataSize, outDataSize, outData, static_cast<UInt32>(0));
         case kAudioDevicePropertyBufferFrameSize:
-            return writeScalar(inDataSize, outDataSize, outData, gBufferFrameSize[playerForDevice(objectID)]);
+            return writeScalar(inDataSize, outDataSize, outData,
+                               gBufferFrameSize[playerForDevice(objectID)].load(std::memory_order_acquire));
         case kAudioDevicePropertyZeroTimeStampPeriod:
             return writeScalar(inDataSize, outDataSize, outData, kZeroTimestampPeriod);
         case kAudioDevicePropertyClockAlgorithm:
@@ -548,7 +554,7 @@ OSStatus STDMETHODCALLTYPE GetPropertyData(AudioServerPlugInDriverRef, AudioObje
             return writeScalar(inDataSize, outDataSize, outData, static_cast<UInt32>(1));
         case kAudioStreamPropertyVirtualFormat:
         case kAudioStreamPropertyPhysicalFormat:
-            return writeScalar(inDataSize, outDataSize, outData, gCurrentFormat[playerForStream(objectID)]);
+            return writeScalar(inDataSize, outDataSize, outData, currentFormat(playerForStream(objectID)));
         case kAudioStreamPropertyAvailableVirtualFormats:
         case kAudioStreamPropertyAvailablePhysicalFormats: {
             if (inDataSize < sizeof(AudioStreamRangedDescription) * 2) {
@@ -581,13 +587,7 @@ OSStatus STDMETHODCALLTYPE SetPropertyData(AudioServerPlugInDriverRef, AudioObje
         if (requested < rsbridge::kMinBufferFrames || requested > 2048) {
             return kAudioHardwareIllegalOperationError;
         }
-        gBufferFrameSize[devicePlayer] = requested;
-        if (gRings[devicePlayer].valid()) {
-            const uint32_t targetLatency = gRings[devicePlayer].header->targetLatencyFrames.load(std::memory_order_acquire);
-            if (targetLatency > requested) {
-                rsbridge::setTargetLatencyFrames(gRings[devicePlayer], requested);
-            }
-        }
+        gBufferFrameSize[devicePlayer].store(requested, std::memory_order_release);
         notifyPropertyChanged(objectID, *address);
         return kAudioHardwareNoError;
     }
@@ -600,7 +600,7 @@ OSStatus STDMETHODCALLTYPE SetPropertyData(AudioServerPlugInDriverRef, AudioObje
         if (!sameFormat(requested, gFloatFormat) && !sameFormat(requested, gInt16Format)) {
             return kAudioDeviceUnsupportedFormatError;
         }
-        gCurrentFormat[streamPlayer] = requested;
+        gUseFloatFormat[streamPlayer].store(sameFormat(requested, gFloatFormat), std::memory_order_release);
         notifyPropertyChanged(objectID, *address);
         return kAudioHardwareNoError;
     }
@@ -613,10 +613,15 @@ OSStatus STDMETHODCALLTYPE Initialize(AudioServerPlugInDriverRef, AudioServerPlu
     mach_timebase_info_data_t timebase{};
     mach_timebase_info(&timebase);
     const double nanosPerTick = static_cast<double>(timebase.numer) / static_cast<double>(timebase.denom);
-    gHostTicksPerFrame = (1000000000.0 / static_cast<double>(rsbridge::kSampleRate)) / nanosPerTick;
+    gHostTicksPerFrame.store((1000000000.0 / static_cast<double>(rsbridge::kSampleRate)) / nanosPerTick,
+                             std::memory_order_release);
     for (UInt32 i = 0; i < kPlayerCount; ++i) {
-        rsbridge::openSharedRingForPlayer(gRings[i], i + 1, false);
-        gAnchorHostTime[i] = mach_absolute_time();
+        gRunningClients[i].store(0, std::memory_order_release);
+        gAnchorHostTime[i].store(mach_absolute_time(), std::memory_order_release);
+        gTimestampSeed[i].store(1, std::memory_order_release);
+        gBufferFrameSize[i].store(rsbridge::kDefaultBufferFrames, std::memory_order_release);
+        gUseFloatFormat[i].store(true, std::memory_order_release);
+        refreshRing(i);
     }
     return kAudioHardwareNoError;
 }
@@ -626,21 +631,10 @@ OSStatus STDMETHODCALLTYPE StartIO(AudioServerPlugInDriverRef, AudioObjectID dev
     if (player < 0) {
         return kAudioHardwareBadDeviceError;
     }
-    if (!gRings[player].valid()) {
-        rsbridge::openSharedRingForPlayer(gRings[player], player + 1, false);
-    }
     const UInt32 previous = gRunningClients[player].fetch_add(1);
     if (previous == 0) {
-        if (gRings[player].valid()) {
-            const uint64_t writeFrame = gRings[player].header->writeFrame.load(std::memory_order_acquire);
-            const uint32_t targetLatency = gRings[player].header->targetLatencyFrames.load(std::memory_order_acquire);
-            gReadFrame[player] = writeFrame > targetLatency ? writeFrame - targetLatency : 0;
-        } else {
-            gReadFrame[player] = 0;
-        }
-        gAnchorHostTime[player] = mach_absolute_time();
-        gAnchorSampleTime[player] = 0;
-        ++gTimestampSeed[player];
+        gAnchorHostTime[player].store(mach_absolute_time(), std::memory_order_release);
+        gTimestampSeed[player].fetch_add(1, std::memory_order_acq_rel);
     }
     return kAudioHardwareNoError;
 }
@@ -662,11 +656,15 @@ OSStatus STDMETHODCALLTYPE GetZeroTimeStamp(AudioServerPlugInDriverRef, AudioObj
         return kAudioHardwareBadDeviceError;
     }
     const uint64_t now = mach_absolute_time();
-    const auto elapsedFrames = static_cast<uint64_t>((now - gAnchorHostTime[player]) / gHostTicksPerFrame);
+    const auto anchorHostTime = gAnchorHostTime[player].load(std::memory_order_acquire);
+    const auto hostTicksPerFrame = gHostTicksPerFrame.load(std::memory_order_acquire);
+    const auto elapsedFrames = hostTicksPerFrame > 0
+                                   ? static_cast<uint64_t>((now - anchorHostTime) / hostTicksPerFrame)
+                                   : static_cast<uint64_t>(0);
     const auto periods = elapsedFrames / kZeroTimestampPeriod;
-    *outSampleTime = gAnchorSampleTime[player] + static_cast<Float64>(periods * kZeroTimestampPeriod);
-    *outHostTime = gAnchorHostTime[player] + static_cast<uint64_t>((*outSampleTime - gAnchorSampleTime[player]) * gHostTicksPerFrame);
-    *outSeed = gTimestampSeed[player];
+    *outSampleTime = static_cast<Float64>(periods * kZeroTimestampPeriod);
+    *outHostTime = anchorHostTime + static_cast<uint64_t>(*outSampleTime * hostTicksPerFrame);
+    *outSeed = gTimestampSeed[player].load(std::memory_order_acquire);
     return kAudioHardwareNoError;
 }
 
@@ -696,8 +694,8 @@ OSStatus STDMETHODCALLTYPE DoIOOperation(AudioServerPlugInDriverRef, AudioObject
     UInt32 offset = 0;
     while (remaining > 0) {
         UInt32 chunk = remaining > 4096 ? 4096 : remaining;
-        rsbridge::readMonoFrames(gRings[player], gReadFrame[player], scratch, chunk);
-        if ((gCurrentFormat[player].mFormatFlags & kAudioFormatFlagIsFloat) != 0) {
+        rsbridge::readLatestMonoFrames(gRings[player], scratch, chunk);
+        if (gUseFloatFormat[player].load(std::memory_order_acquire)) {
             std::memcpy(static_cast<float*>(ioMainBuffer) + offset, scratch, sizeof(float) * chunk);
         } else {
             auto* out = static_cast<int16_t*>(ioMainBuffer) + offset;
@@ -725,7 +723,12 @@ OSStatus STDMETHODCALLTYPE DestroyDevice(AudioServerPlugInDriverRef, AudioObject
 }
 
 OSStatus STDMETHODCALLTYPE AddRemoveClient(AudioServerPlugInDriverRef, AudioObjectID deviceID, const AudioServerPlugInClientInfo*) {
-    return playerForDevice(deviceID) >= 0 ? kAudioHardwareNoError : kAudioHardwareBadDeviceError;
+    int player = playerForDevice(deviceID);
+    if (player < 0) {
+        return kAudioHardwareBadDeviceError;
+    }
+    refreshRing(static_cast<UInt32>(player));
+    return kAudioHardwareNoError;
 }
 
 OSStatus STDMETHODCALLTYPE BeginEndIO(AudioServerPlugInDriverRef, AudioObjectID deviceID, UInt32, UInt32, UInt32,

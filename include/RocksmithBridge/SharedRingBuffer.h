@@ -15,6 +15,7 @@ namespace rsbridge {
 
 inline constexpr char kSharedMemoryPath[] = "/tmp/com.vhusso.rocksmithbridge.audio";
 inline constexpr char kSharedMemoryPathPlayer2[] = "/tmp/com.vhusso.rocksmithbridge.audio.2";
+inline constexpr mode_t kSharedRingFileMode = 0644;
 inline constexpr uint32_t kSharedRingMagic = 0x52534252; // RSBR
 inline constexpr uint32_t kSharedRingVersion = 3;
 inline constexpr uint32_t kBridgePlayerCount = 2;
@@ -48,6 +49,7 @@ struct SharedRing {
     size_t mappingSize = 0;
     SharedRingHeader* header = nullptr;
     float* samples = nullptr;
+    bool writable = false;
 
     bool valid() const {
         return header != nullptr && samples != nullptr &&
@@ -65,6 +67,8 @@ enum class SharedRingOpenError {
     mmapFailed,
     invalidPlayer,
     invalidFile,
+    invalidSize,
+    invalidPermissions,
     invalidHeader
 };
 
@@ -82,13 +86,32 @@ inline const char* sharedRingOpenErrorMessage(SharedRingOpenError error) {
             return "invalid player";
         case SharedRingOpenError::invalidFile:
             return "invalid file";
+        case SharedRingOpenError::invalidSize:
+            return "invalid size";
+        case SharedRingOpenError::invalidPermissions:
+            return "invalid permissions";
         case SharedRingOpenError::invalidHeader:
             return "invalid header";
     }
 }
 
+enum class SharedRingAccess {
+    readOnly,
+    readWrite
+};
+
 inline size_t sharedRingSize() {
     return sizeof(SharedRingHeader) + sizeof(float) * kRingCapacityFrames * kChannelCount;
+}
+
+inline uint32_t clampTargetLatencyFrames(uint32_t frames) {
+    if (frames < kMinBufferFrames) {
+        return kMinBufferFrames;
+    }
+    if (frames > kMaxTargetLatencyFrames) {
+        return kMaxTargetLatencyFrames;
+    }
+    return frames;
 }
 
 inline void initializeSharedRing(SharedRingHeader* header) {
@@ -119,18 +142,29 @@ inline const char* sharedRingPathForPlayer(uint32_t player) {
 }
 
 inline bool openSharedRingAtPath(SharedRing& ring, const char* path, bool createIfMissing,
-                                 SharedRingOpenError* error = nullptr) {
+                                 SharedRingOpenError* error = nullptr,
+                                 SharedRingAccess access = SharedRingAccess::readWrite) {
     if (error != nullptr) {
         *error = SharedRingOpenError::none;
     }
-    int flags = createIfMissing ? (O_CREAT | O_RDWR) : O_RDWR;
+    if (path == nullptr) {
+        if (error != nullptr) {
+            *error = SharedRingOpenError::invalidFile;
+        }
+        return false;
+    }
+    const bool writable = access == SharedRingAccess::readWrite;
+    int flags = createIfMissing || writable ? O_RDWR : O_RDONLY;
+    if (createIfMissing) {
+        flags |= O_CREAT;
+    }
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
 #endif
 #ifdef O_NOFOLLOW
     flags |= O_NOFOLLOW;
 #endif
-    ring.fd = open(path, flags, 0666);
+    ring.fd = open(path, flags, kSharedRingFileMode);
     if (ring.fd < 0) {
         if (error != nullptr) {
             *error = SharedRingOpenError::openFailed;
@@ -138,6 +172,7 @@ inline bool openSharedRingAtPath(SharedRing& ring, const char* path, bool create
         return false;
     }
 
+    ring.mappingSize = sharedRingSize();
     struct stat statBuffer {};
     if (fstat(ring.fd, &statBuffer) != 0 || !S_ISREG(statBuffer.st_mode)) {
         if (error != nullptr) {
@@ -147,8 +182,25 @@ inline bool openSharedRingAtPath(SharedRing& ring, const char* path, bool create
         ring.fd = -1;
         return false;
     }
+    if (statBuffer.st_nlink != 1) {
+        if (error != nullptr) {
+            *error = SharedRingOpenError::invalidPermissions;
+        }
+        close(ring.fd);
+        ring.fd = -1;
+        return false;
+    }
+    if ((statBuffer.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+        if (!createIfMissing || fchmod(ring.fd, kSharedRingFileMode) != 0) {
+            if (error != nullptr) {
+                *error = SharedRingOpenError::invalidPermissions;
+            }
+            close(ring.fd);
+            ring.fd = -1;
+            return false;
+        }
+    }
 
-    ring.mappingSize = sharedRingSize();
     if (createIfMissing) {
         if (ftruncate(ring.fd, static_cast<off_t>(ring.mappingSize)) != 0) {
             if (error != nullptr) {
@@ -158,10 +210,18 @@ inline bool openSharedRingAtPath(SharedRing& ring, const char* path, bool create
             ring.fd = -1;
             return false;
         }
-        fchmod(ring.fd, 0666);
+        fchmod(ring.fd, kSharedRingFileMode);
+    } else if (statBuffer.st_size != static_cast<off_t>(ring.mappingSize)) {
+        if (error != nullptr) {
+            *error = SharedRingOpenError::invalidSize;
+        }
+        close(ring.fd);
+        ring.fd = -1;
+        return false;
     }
 
-    ring.mapping = mmap(nullptr, ring.mappingSize, PROT_READ | PROT_WRITE, MAP_SHARED, ring.fd, 0);
+    const int protections = PROT_READ | (writable ? PROT_WRITE : 0);
+    ring.mapping = mmap(nullptr, ring.mappingSize, protections, MAP_SHARED, ring.fd, 0);
     if (ring.mapping == MAP_FAILED) {
         if (error != nullptr) {
             *error = SharedRingOpenError::mmapFailed;
@@ -173,6 +233,7 @@ inline bool openSharedRingAtPath(SharedRing& ring, const char* path, bool create
 
     ring.header = static_cast<SharedRingHeader*>(ring.mapping);
     ring.samples = reinterpret_cast<float*>(static_cast<uint8_t*>(ring.mapping) + sizeof(SharedRingHeader));
+    ring.writable = writable;
 
     const bool needsInit = ring.header->magic.load(std::memory_order_acquire) != kSharedRingMagic ||
                            ring.header->version.load(std::memory_order_acquire) != kSharedRingVersion ||
@@ -204,7 +265,8 @@ inline bool openSharedRing(SharedRing& ring, bool createIfMissing, SharedRingOpe
 }
 
 inline bool openSharedRingForPlayer(SharedRing& ring, uint32_t player, bool createIfMissing,
-                                    SharedRingOpenError* error = nullptr) {
+                                    SharedRingOpenError* error = nullptr,
+                                    SharedRingAccess access = SharedRingAccess::readWrite) {
     const char* path = sharedRingPathForPlayer(player);
     if (path == nullptr) {
         if (error != nullptr) {
@@ -212,7 +274,7 @@ inline bool openSharedRingForPlayer(SharedRing& ring, uint32_t player, bool crea
         }
         return false;
     }
-    return openSharedRingAtPath(ring, path, createIfMissing, error);
+    return openSharedRingAtPath(ring, path, createIfMissing, error, access);
 }
 
 inline void closeSharedRing(SharedRing& ring) {
@@ -226,11 +288,10 @@ inline void closeSharedRing(SharedRing& ring) {
 }
 
 inline void writeMonoFrames(SharedRing& ring, const float* input, uint32_t frameCount) {
-    if (!ring.valid() || input == nullptr) {
+    if (!ring.valid() || !ring.writable || input == nullptr) {
         return;
     }
 
-    const uint32_t capacity = ring.header->capacityFrames;
     uint64_t writeFrame = ring.header->writeFrame.load(std::memory_order_relaxed);
     float peak = 0.0f;
     for (uint32_t i = 0; i < frameCount; ++i) {
@@ -239,7 +300,7 @@ inline void writeMonoFrames(SharedRing& ring, const float* input, uint32_t frame
         if (absSample > peak) {
             peak = absSample;
         }
-        ring.samples[(writeFrame + i) % capacity] = sample;
+        ring.samples[(writeFrame + i) % kRingCapacityFrames] = sample;
     }
 
     ring.header->writeFrame.store(writeFrame + frameCount, std::memory_order_release);
@@ -249,16 +310,10 @@ inline void writeMonoFrames(SharedRing& ring, const float* input, uint32_t frame
 }
 
 inline void setTargetLatencyFrames(SharedRing& ring, uint32_t frames) {
-    if (!ring.valid()) {
+    if (!ring.valid() || !ring.writable) {
         return;
     }
-    if (frames < kMinBufferFrames) {
-        frames = kMinBufferFrames;
-    }
-    if (frames > kMaxTargetLatencyFrames) {
-        frames = kMaxTargetLatencyFrames;
-    }
-    ring.header->targetLatencyFrames.store(frames, std::memory_order_release);
+    ring.header->targetLatencyFrames.store(clampTargetLatencyFrames(frames), std::memory_order_release);
 }
 
 inline uint32_t readMonoFrames(SharedRing& ring, uint64_t& readFrame, float* output, uint32_t frameCount) {
@@ -269,21 +324,22 @@ inline uint32_t readMonoFrames(SharedRing& ring, uint64_t& readFrame, float* out
         return 0;
     }
 
-    const uint32_t capacity = ring.header->capacityFrames;
     const uint64_t writeFrame = ring.header->writeFrame.load(std::memory_order_acquire);
-    const uint32_t targetLatencyFrames = ring.header->targetLatencyFrames.load(std::memory_order_acquire);
+    const uint32_t targetLatencyFrames = clampTargetLatencyFrames(ring.header->targetLatencyFrames.load(std::memory_order_acquire));
     const uint64_t target = targetLatencyFrames > 0 ? targetLatencyFrames : 1;
-    const bool invalidReadHead = readFrame == 0 || writeFrame < readFrame || writeFrame - readFrame > capacity;
+    const bool invalidReadHead = readFrame == 0 || writeFrame < readFrame || writeFrame - readFrame > kRingCapacityFrames;
     const bool latencyDriftedHigh = !invalidReadHead && writeFrame - readFrame > target + frameCount;
     if (invalidReadHead || latencyDriftedHigh) {
         readFrame = writeFrame > target ? writeFrame - target : 0;
-        ring.header->overruns.fetch_add(1, std::memory_order_relaxed);
+        if (ring.writable) {
+            ring.header->overruns.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     uint64_t available = writeFrame - readFrame;
     uint32_t copied = 0;
     while (copied < frameCount && available > 0) {
-        output[copied] = ring.samples[readFrame % capacity];
+        output[copied] = ring.samples[readFrame % kRingCapacityFrames];
         ++readFrame;
         ++copied;
         --available;
@@ -291,10 +347,47 @@ inline uint32_t readMonoFrames(SharedRing& ring, uint64_t& readFrame, float* out
 
     if (copied < frameCount) {
         std::memset(output + copied, 0, sizeof(float) * (frameCount - copied));
-        ring.header->underruns.fetch_add(1, std::memory_order_relaxed);
+        if (ring.writable) {
+            ring.header->underruns.fetch_add(1, std::memory_order_relaxed);
+        }
     }
-    ring.header->driverReadCalls.fetch_add(1, std::memory_order_relaxed);
-    ring.header->driverReadFrames.fetch_add(frameCount, std::memory_order_relaxed);
+    if (ring.writable) {
+        ring.header->driverReadCalls.fetch_add(1, std::memory_order_relaxed);
+        ring.header->driverReadFrames.fetch_add(frameCount, std::memory_order_relaxed);
+    }
+    return copied;
+}
+
+inline uint32_t readLatestMonoFrames(SharedRing& ring, float* output, uint32_t frameCount) {
+    if (!ring.valid() || output == nullptr) {
+        if (output != nullptr) {
+            std::memset(output, 0, sizeof(float) * frameCount);
+        }
+        return 0;
+    }
+
+    const uint64_t writeFrame = ring.header->writeFrame.load(std::memory_order_acquire);
+    const uint32_t targetLatencyFrames = clampTargetLatencyFrames(ring.header->targetLatencyFrames.load(std::memory_order_acquire));
+    const uint64_t lag = targetLatencyFrames > frameCount ? targetLatencyFrames : frameCount;
+    uint64_t readFrame = writeFrame > lag ? writeFrame - lag : 0;
+    uint64_t available = writeFrame - readFrame;
+    uint32_t copied = 0;
+    while (copied < frameCount && available > 0) {
+        output[copied] = ring.samples[readFrame % kRingCapacityFrames];
+        ++readFrame;
+        ++copied;
+        --available;
+    }
+    if (copied < frameCount) {
+        std::memset(output + copied, 0, sizeof(float) * (frameCount - copied));
+        if (ring.writable) {
+            ring.header->underruns.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (ring.writable) {
+        ring.header->driverReadCalls.fetch_add(1, std::memory_order_relaxed);
+        ring.header->driverReadFrames.fetch_add(frameCount, std::memory_order_relaxed);
+    }
     return copied;
 }
 

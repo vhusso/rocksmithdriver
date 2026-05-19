@@ -1,6 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 driver="/Library/Audio/Plug-Ins/HAL/RocksmithMotuBridge.driver"
 helper_dir="/usr/local/libexec/RocksmithMotuBridge"
 target_user="${SUDO_USER:-$(id -un)}"
@@ -11,16 +12,32 @@ if [[ -z "$target_home" ]]; then
 fi
 agent="$target_home/Library/LaunchAgents/com.vhusso.rocksmithbridge.helper.plist"
 domain="gui/$target_uid"
+trash_dir="$target_home/.Trash/RocksmithMotuBridge uninstall $(date +%Y%m%d%H%M%S)"
+ctl="$repo_root/build/bin/rocksmith_bridge_ctl"
 
 remove_path() {
   local path="$1"
-  if command -v trash >/dev/null 2>&1; then
-    trash "$path"
-  else
-    echo "Install trash first or remove manually: $path" >&2
-    exit 1
-  fi
+  case "$path" in
+    "$agent"|"$driver"|"$helper_dir") ;;
+    *)
+      echo "Refusing to remove unexpected path: $path" >&2
+      exit 1
+      ;;
+  esac
+  mkdir -p "$trash_dir"
+  /bin/mv "$path" "$trash_dir/$(basename "$path")"
+  chown -R "$target_user" "$trash_dir" 2>/dev/null || true
 }
+
+if [[ -x "$ctl" ]]; then
+  if [[ "$(id -u)" == "0" && "$target_user" != "root" ]]; then
+    /usr/bin/sudo -u "$target_user" "$ctl" destroy-aggregate 2>/dev/null || true
+  else
+    "$ctl" destroy-aggregate 2>/dev/null || true
+  fi
+else
+  echo "Aggregate cleanup skipped; build rocksmith_bridge_ctl first to remove aggregate devices automatically." >&2
+fi
 
 if [[ -f "$agent" ]]; then
   launchctl bootout "$domain" "$agent" 2>/dev/null || true
@@ -36,4 +53,4 @@ if [[ -d "$helper_dir" ]]; then
 fi
 
 killall coreaudiod 2>/dev/null || true
-echo "Removed Rocksmith MOTU Bridge local install."
+echo "Moved Rocksmith MOTU Bridge local install to: $trash_dir"

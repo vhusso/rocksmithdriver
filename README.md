@@ -2,7 +2,7 @@
 
 Local macOS Core Audio bridge for using MOTU M4 inputs as Rocksmith 2014 cable-like inputs. It defaults to MOTU M4 input 1 for player 1 and input 2 for player 2 when no config exists.
 
-The project has three pieces:
+The project has four pieces:
 
 - `RocksmithMotuBridge.driver`: AudioServerPlugIn HAL driver exposing two mono virtual inputs named `Rocksmith MOTU Bridge Source 1` and `Rocksmith MOTU Bridge Source 2`.
 - `RocksmithBridgeHelper`: user process that captures the configured input channel pair and writes mono float32 audio into two shared rings.
@@ -10,6 +10,14 @@ The project has three pieces:
 - `rocksmith_bridge_rtl`: round-trip latency measurement tool for physical loopback tests.
 
 ## Build
+
+Requirements:
+
+- macOS 14 or newer.
+- Apple Command Line Tools (`xcode-select --install`).
+- Admin access for the local HAL install.
+
+This is currently a source-build local install. It is not a signed or notarized public binary installer.
 
 ```sh
 make all
@@ -24,6 +32,8 @@ make test
 ```
 
 ## Local Install
+
+`install-local` copies the HAL bundle into `/Library/Audio/Plug-Ins/HAL`, installs the helper under `/usr/local/libexec`, enforces root-owned install permissions, and restarts `coreaudiod`.
 
 ```sh
 sudo make install-local
@@ -54,7 +64,7 @@ Launch Rocksmith 2014 after those devices are visible.
 ./build/bin/rocksmith_bridge_ctl set-virtual-buffer 16
 ./build/bin/rocksmith_bridge_ctl repair-aggregate
 ./build/bin/rocksmith_bridge_ctl destroy-aggregate
-tail -f /tmp/rocksmithbridge-helper.err
+tail -f ~/Library/Logs/RocksmithMotuBridge/helper.err
 ```
 
 `list-devices` remains as a compatibility alias for `list-inputs`.
@@ -101,7 +111,7 @@ If you hear crackles or the `status` command shows underruns increasing while pl
 
 `set-virtual-buffer` asks Core Audio to set the virtual device buffer. Rocksmith may still request its own size when it opens the device, and its in-game audio engine setting is separate from this driver property.
 
-The bridge does not intentionally queue multiple buffers. The shared ring is treated as a latest-audio handoff: if the virtual driver sees more than the configured safety latency plus the current render quantum, it resynchronizes near the writer instead of draining old audio.
+The bridge does not intentionally queue multiple buffers. The virtual driver reads the latest complete window behind the helper write head, using the larger of the configured bridge safety latency and the current render quantum. That keeps multiple Core Audio clients from consuming or stealing frames from each other.
 
 ## Round-Trip Latency Measurement
 
@@ -138,7 +148,7 @@ The difference between those two numbers is the bridge-side cost. For the full b
 sudo ./scripts/uninstall_local.sh
 ```
 
-The uninstall script uses `trash` for removals, unloads the launch agent, removes the installed helper and HAL bundle, then restarts `coreaudiod`.
+The uninstall script destroys the managed aggregate devices, unloads the launch agent, moves the installed helper and HAL bundle into the invoking user's Trash, then restarts `coreaudiod`.
 
 ## Notes
 

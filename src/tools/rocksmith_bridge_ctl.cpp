@@ -422,7 +422,9 @@ void doctor() {
                         static_cast<double>(peak) / 1000000.0,
                         static_cast<unsigned long long>(reads));
             doctorCheck(heartbeat > 0, "helper has written audio callbacks", "helper has not written audio yet", true);
-            doctorCheck(reads > 0, "driver has been read by an audio client", "driver has not been read yet; open Rocksmith or Audio MIDI Setup", true);
+            if (reads == 0) {
+                std::printf("[info] driver read counter is zero; read-only driver mappings may leave this unchanged\n");
+            }
             rsbridge::closeSharedRing(ring);
         } else {
             healthy = false;
