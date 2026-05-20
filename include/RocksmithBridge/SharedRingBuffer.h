@@ -19,6 +19,7 @@ inline constexpr mode_t kSharedRingFileMode = 0644;
 inline constexpr uint32_t kSharedRingMagic = 0x52534252; // RSBR
 inline constexpr uint32_t kSharedRingVersion = 3;
 inline constexpr uint32_t kBridgePlayerCount = 2;
+inline constexpr uint32_t kDefaultActivePlayerCount = 1;
 inline constexpr uint32_t kSampleRate = 48000;
 inline constexpr uint32_t kChannelCount = 1;
 inline constexpr uint32_t kRingCapacityFrames = kSampleRate * 4;

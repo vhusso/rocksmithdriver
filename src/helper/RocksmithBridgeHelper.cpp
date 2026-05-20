@@ -16,12 +16,13 @@
 namespace {
 
 constexpr UInt32 kMaxCaptureFrames = 16384;
+constexpr UInt32 kActivePlayerCount = rsbridge::kDefaultActivePlayerCount;
+static_assert(kActivePlayerCount == 1, "Helper currently captures one active player input by default.");
 
 struct CaptureSession {
     AudioUnit unit = nullptr;
     AudioBufferList* bufferList = nullptr;
-    rsbridge::SharedRing rings[rsbridge::kBridgePlayerCount];
-    float* splitBuffers[rsbridge::kBridgePlayerCount] = {};
+    rsbridge::SharedRing rings[kActivePlayerCount];
     std::atomic<OSStatus> renderError{noErr};
 };
 
@@ -75,7 +76,8 @@ bool sameRuntimeConfig(const rsbridge::BridgeConfig& a, const rsbridge::BridgeCo
     return a.sourceUID == b.sourceUID &&
            a.sourceChannel == b.sourceChannel &&
            a.sourceBufferFrames == b.sourceBufferFrames &&
-           a.targetLatencyFrames == b.targetLatencyFrames;
+           a.targetLatencyFrames == b.targetLatencyFrames &&
+           a.virtualBufferFrames == b.virtualBufferFrames;
 }
 
 bool deviceIsAlive(AudioObjectID deviceID) {
@@ -150,10 +152,9 @@ SourceSelection resolveSource(const rsbridge::BridgeConfig& config) {
     if (selection.deviceID == kAudioObjectUnknown || selection.info.inputChannels == 0) {
         return {};
     }
-    if (!rsbridge::hasInputChannelRange(selection.info, selection.channel)) {
-        std::fprintf(stderr, "Configured channels %u-%u are invalid for %s (%u input channels).\n",
+    if (!rsbridge::hasInputChannelRange(selection.info, selection.channel, kActivePlayerCount)) {
+        std::fprintf(stderr, "Configured channel %u is invalid for %s (%u input channels).\n",
                      selection.channel,
-                     selection.channel + rsbridge::kBridgePlayerCount - 1,
                      selection.info.name.c_str(), selection.info.inputChannels);
         return {};
     }
@@ -168,20 +169,13 @@ OSStatus inputCallback(void* refCon, AudioUnitRenderActionFlags* flags, const Au
         return kAudio_ParamError;
     }
     session->bufferList->mNumberBuffers = 1;
-    session->bufferList->mBuffers[0].mNumberChannels = 2;
-    session->bufferList->mBuffers[0].mDataByteSize = frameCount * 2 * sizeof(float);
+    session->bufferList->mBuffers[0].mNumberChannels = kActivePlayerCount;
+    session->bufferList->mBuffers[0].mDataByteSize = frameCount * kActivePlayerCount * sizeof(float);
 
     OSStatus status = AudioUnitRender(session->unit, flags, timestamp, busNumber, frameCount, session->bufferList);
     if (status == noErr) {
         const auto* input = static_cast<const float*>(session->bufferList->mBuffers[0].mData);
-        for (UInt32 i = 0; i < frameCount; ++i) {
-            session->splitBuffers[0][i] = input[i * 2];
-            session->splitBuffers[1][i] = input[i * 2 + 1];
-        }
-        rsbridge::writeMonoFrames(session->rings[0], session->splitBuffers[0], frameCount);
-        if (rsbridge::kBridgePlayerCount > 1) {
-            rsbridge::writeMonoFrames(session->rings[1], session->splitBuffers[1], frameCount);
-        }
+        rsbridge::writeMonoFrames(session->rings[0], input, frameCount);
     } else {
         session->renderError.store(status, std::memory_order_relaxed);
     }
@@ -228,17 +222,16 @@ bool configureCapture(CaptureSession& session, const SourceSelection& source, UI
     format.mSampleRate = rsbridge::kSampleRate;
     format.mFormatID = kAudioFormatLinearPCM;
     format.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagsNativeEndian;
-    format.mBytesPerPacket = sizeof(float) * 2;
+    format.mBytesPerPacket = sizeof(float) * kActivePlayerCount;
     format.mFramesPerPacket = 1;
-    format.mBytesPerFrame = sizeof(float) * 2;
-    format.mChannelsPerFrame = 2;
+    format.mBytesPerFrame = sizeof(float) * kActivePlayerCount;
+    format.mChannelsPerFrame = kActivePlayerCount;
     format.mBitsPerChannel = 32;
 
     status = AudioUnitSetProperty(session.unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1,
                                   &format, sizeof(format));
     if (status == noErr) {
-        SInt32 channelMap[] = {static_cast<SInt32>(source.channel - 1),
-                               static_cast<SInt32>(source.channel)};
+        SInt32 channelMap[] = {static_cast<SInt32>(source.channel - 1)};
         status = AudioUnitSetProperty(session.unit, kAudioOutputUnitProperty_ChannelMap, kAudioUnitScope_Output, 1,
                                       channelMap, sizeof(channelMap));
     }
@@ -258,14 +251,10 @@ bool configureCapture(CaptureSession& session, const SourceSelection& source, UI
         return false;
     }
     session.bufferList->mNumberBuffers = 1;
-    session.bufferList->mBuffers[0].mNumberChannels = 2;
-    session.bufferList->mBuffers[0].mDataByteSize = kMaxCaptureFrames * 2 * sizeof(float);
-    session.bufferList->mBuffers[0].mData = std::calloc(kMaxCaptureFrames * 2, sizeof(float));
-    for (uint32_t player = 0; player < rsbridge::kBridgePlayerCount; ++player) {
-        session.splitBuffers[player] = static_cast<float*>(std::calloc(kMaxCaptureFrames, sizeof(float)));
-    }
-    if (session.bufferList->mBuffers[0].mData == nullptr || session.splitBuffers[0] == nullptr ||
-        session.splitBuffers[1] == nullptr) {
+    session.bufferList->mBuffers[0].mNumberChannels = kActivePlayerCount;
+    session.bufferList->mBuffers[0].mDataByteSize = kMaxCaptureFrames * kActivePlayerCount * sizeof(float);
+    session.bufferList->mBuffers[0].mData = std::calloc(kMaxCaptureFrames * kActivePlayerCount, sizeof(float));
+    if (session.bufferList->mBuffers[0].mData == nullptr) {
         std::fprintf(stderr, "Unable to allocate capture buffers\n");
         return false;
     }
@@ -290,15 +279,13 @@ void cleanup(CaptureSession& session) {
         std::free(session.bufferList);
         session.bufferList = nullptr;
     }
-    for (uint32_t player = 0; player < rsbridge::kBridgePlayerCount; ++player) {
-        std::free(session.splitBuffers[player]);
-        session.splitBuffers[player] = nullptr;
+    for (uint32_t player = 0; player < kActivePlayerCount; ++player) {
         rsbridge::closeSharedRing(session.rings[player]);
     }
 }
 
 bool ensureRing(UInt32 targetLatencyFrames) {
-    for (uint32_t player = 1; player <= rsbridge::kBridgePlayerCount; ++player) {
+    for (uint32_t player = 1; player <= kActivePlayerCount; ++player) {
         rsbridge::SharedRing ring;
         if (!rsbridge::openSharedRingForPlayer(ring, player, true)) {
             std::fprintf(stderr, "Unable to open shared ring buffer for player %u\n", player);
@@ -344,7 +331,7 @@ int main() {
 
         CaptureSession session;
         bool ringsReady = true;
-        for (uint32_t player = 1; player <= rsbridge::kBridgePlayerCount; ++player) {
+        for (uint32_t player = 1; player <= kActivePlayerCount; ++player) {
             if (!rsbridge::openSharedRingForPlayer(session.rings[player - 1], player, false)) {
                 ringsReady = false;
                 break;
@@ -370,10 +357,9 @@ int main() {
             continue;
         }
 
-        std::fprintf(stderr, "Streaming %s channels %u-%u at 48 kHz mono.\n",
+        std::fprintf(stderr, "Streaming %s channel %u at 48 kHz mono.\n",
                      source.info.name.c_str(),
-                     source.channel,
-                     source.channel + rsbridge::kBridgePlayerCount - 1);
+                     source.channel);
         lastWaitMessage.clear();
 
         rsbridge::BridgeConfig activeConfig = config;
@@ -384,10 +370,6 @@ int main() {
                 std::fprintf(stderr, "Config changed; reconnecting capture.\n");
                 break;
             }
-            for (uint32_t player = 0; player < rsbridge::kBridgePlayerCount; ++player) {
-                rsbridge::setTargetLatencyFrames(session.rings[player], nextConfig.targetLatencyFrames);
-            }
-            requestVirtualBufferFrames(nextConfig.virtualBufferFrames);
         }
 
         OSStatus renderError = session.renderError.load(std::memory_order_relaxed);

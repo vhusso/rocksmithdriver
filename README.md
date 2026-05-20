@@ -1,11 +1,11 @@
 # Rocksmith Audio Input Bridge
 
-Local macOS Core Audio bridge for using an audio-interface input as Rocksmith 2014 cable-like inputs. It defaults to MOTU M4 input 1 for player 1 and input 2 for player 2 when no config exists, but it can be configured for any Core Audio input device with at least two adjacent input channels.
+Local macOS Core Audio bridge for using an audio-interface input as a Rocksmith 2014 cable-like input. It defaults to MOTU M4 input 1 for player 1 when no config exists, but it can be configured for any Core Audio input device with at least one input channel.
 
 The project has four pieces:
 
 - `RocksmithMotuBridge.driver`: AudioServerPlugIn HAL driver exposing two mono virtual inputs named `Rocksmith MOTU Bridge Source 1` and `Rocksmith MOTU Bridge Source 2`.
-- `RocksmithBridgeHelper`: user process that captures the configured input channel pair and writes mono float32 audio into two shared rings.
+- `RocksmithBridgeHelper`: user process that captures the configured player 1 input channel and writes mono float32 audio into the shared ring.
 - `rocksmith_bridge_ctl`: setup and diagnostics tool for config, buffers, and the aggregates named `Rocksmith USB Guitar Adapter 1` and `Rocksmith USB Guitar Adapter 2`.
 - `rocksmith_bridge_rtl`: round-trip latency measurement tool for physical loopback tests.
 
@@ -55,7 +55,7 @@ Then open Audio MIDI Setup and verify:
 - `Rocksmith MOTU Bridge Source 1` exists and has 1 input channel.
 - `Rocksmith USB Guitar Adapter 1` exists and has 1 input channel.
 
-Launch Rocksmith 2014 after those devices are visible. Two-player aggregate creation is available separately with `repair-aggregate-all`, but the default setup keeps player 1 only because that is the stable Rocksmith test path.
+Launch Rocksmith 2014 after those devices are visible. The default setup keeps player 1 only because that is the stable Rocksmith test path and avoids idle player 2 work. `repair-aggregate-all` is still available for aggregate/device visibility experiments, but the low-power helper feeds player 1 only.
 
 ## Useful Commands
 
@@ -70,7 +70,6 @@ Launch Rocksmith 2014 after those devices are visible. Two-player aggregate crea
 ./build/bin/rocksmith_bridge_ctl set-bridge-latency 16
 ./build/bin/rocksmith_bridge_ctl set-virtual-buffer 16
 ./build/bin/rocksmith_bridge_ctl repair-aggregate
-./build/bin/rocksmith_bridge_ctl repair-aggregate-all
 ./build/bin/rocksmith_bridge_ctl destroy-aggregate
 tail -f ~/Library/Logs/RocksmithMotuBridge/helper.err
 ```
@@ -95,7 +94,7 @@ Config lives at:
 ~/Library/Application Support/RocksmithMotuBridge/config.plist
 ```
 
-Use `set-source` only when you want something other than the automatic MOTU M4 input 1/2 default. Use the UID printed by `list-inputs`; the channel argument is the first channel in the pair, so `set-source DEVICE_UID 1` captures channels 1 and 2.
+Use `set-source` only when you want something other than the automatic MOTU M4 input 1 default. Use the UID printed by `list-inputs`; the channel argument is the input channel used for player 1.
 
 ## Other Audio Interfaces
 
@@ -112,7 +111,7 @@ Configure a different interface with its device UID and first channel:
 ./build/bin/rocksmith_bridge_ctl set-source DEVICE_UID CHANNEL
 ```
 
-`choose-source` is the guided path and avoids copy-pasting long device UIDs. The current source model is an adjacent two-channel pair: `CHANNEL` feeds player 1 and `CHANNEL + 1` feeds player 2. For example, `set-source DEVICE_UID 3` captures interface inputs 3 and 4. Single-input devices are not supported by this two-player helper path yet.
+`choose-source` is the guided path and avoids copy-pasting long device UIDs. The default source model is one active input channel for player 1, so single-input interfaces are supported. For example, `set-source DEVICE_UID 3` captures interface input 3.
 
 ## Latency and Buffers
 
