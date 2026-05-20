@@ -75,6 +75,18 @@ Launch Rocksmith 2014 after those devices are visible. Two-player aggregate crea
 tail -f ~/Library/Logs/RocksmithMotuBridge/helper.err
 ```
 
+For battery life, stop the helper when you are done playing:
+
+```sh
+make stop-helper
+```
+
+Start it again before playing:
+
+```sh
+make start-helper
+```
+
 `list-devices` remains as a compatibility alias for `list-inputs`.
 
 Config lives at:

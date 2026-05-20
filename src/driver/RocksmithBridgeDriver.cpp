@@ -30,35 +30,20 @@ std::atomic<UInt32> gRefCount{1};
 std::atomic<UInt32> gRunningClients[kPlayerCount];
 AudioServerPlugInHostRef gHost = nullptr;
 rsbridge::SharedRing gRings[kPlayerCount];
+std::atomic<uint64_t> gReadFrame[kPlayerCount];
 std::atomic<uint64_t> gAnchorHostTime[kPlayerCount];
 std::atomic<Float64> gHostTicksPerFrame{0};
 std::atomic<UInt64> gTimestampSeed[kPlayerCount];
 std::atomic<UInt32> gBufferFrameSize[kPlayerCount];
 std::atomic<bool> gUseFloatFormat[kPlayerCount];
 
-AudioStreamBasicDescription gFloatFormat = {
-    static_cast<Float64>(rsbridge::kSampleRate),
-    kAudioFormatLinearPCM,
-    kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagsNativeEndian,
-    sizeof(float),
-    1,
-    sizeof(float),
-    rsbridge::kChannelCount,
-    32,
-    0
-};
+AudioStreamBasicDescription gFloatFormat = {static_cast<Float64>(rsbridge::kSampleRate), kAudioFormatLinearPCM,
+                                            kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagsNativeEndian,
+                                            sizeof(float), 1, sizeof(float), rsbridge::kChannelCount, 32, 0};
 
-AudioStreamBasicDescription gInt16Format = {
-    static_cast<Float64>(rsbridge::kSampleRate),
-    kAudioFormatLinearPCM,
-    kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked | kAudioFormatFlagsNativeEndian,
-    sizeof(int16_t),
-    1,
-    sizeof(int16_t),
-    rsbridge::kChannelCount,
-    16,
-    0
-};
+AudioStreamBasicDescription gInt16Format = {static_cast<Float64>(rsbridge::kSampleRate), kAudioFormatLinearPCM,
+                                            kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked | kAudioFormatFlagsNativeEndian,
+                                            sizeof(int16_t), 1, sizeof(int16_t), rsbridge::kChannelCount, 16, 0};
 
 ULONG STDMETHODCALLTYPE AddRef(void*);
 
@@ -617,6 +602,7 @@ OSStatus STDMETHODCALLTYPE Initialize(AudioServerPlugInDriverRef, AudioServerPlu
                              std::memory_order_release);
     for (UInt32 i = 0; i < kPlayerCount; ++i) {
         gRunningClients[i].store(0, std::memory_order_release);
+        gReadFrame[i].store(0, std::memory_order_release);
         gAnchorHostTime[i].store(mach_absolute_time(), std::memory_order_release);
         gTimestampSeed[i].store(1, std::memory_order_release);
         gBufferFrameSize[i].store(rsbridge::kDefaultBufferFrames, std::memory_order_release);
@@ -633,6 +619,13 @@ OSStatus STDMETHODCALLTYPE StartIO(AudioServerPlugInDriverRef, AudioObjectID dev
     }
     const UInt32 previous = gRunningClients[player].fetch_add(1);
     if (previous == 0) {
+        uint64_t readFrame = 0;
+        if (gRings[player].valid()) {
+            const uint64_t writeFrame = gRings[player].header->writeFrame.load(std::memory_order_acquire);
+            const uint32_t latency = rsbridge::clampTargetLatencyFrames(gRings[player].header->targetLatencyFrames.load(std::memory_order_acquire));
+            readFrame = writeFrame > latency ? writeFrame - latency : 0;
+        }
+        gReadFrame[player].store(readFrame, std::memory_order_release);
         gAnchorHostTime[player].store(mach_absolute_time(), std::memory_order_release);
         gTimestampSeed[player].fetch_add(1, std::memory_order_acq_rel);
     }
@@ -692,9 +685,10 @@ OSStatus STDMETHODCALLTYPE DoIOOperation(AudioServerPlugInDriverRef, AudioObject
     float scratch[4096];
     UInt32 remaining = frameCount;
     UInt32 offset = 0;
+    uint64_t readFrame = gReadFrame[player].load(std::memory_order_acquire);
     while (remaining > 0) {
         UInt32 chunk = remaining > 4096 ? 4096 : remaining;
-        rsbridge::readLatestMonoFrames(gRings[player], scratch, chunk);
+        rsbridge::readMonoFrames(gRings[player], readFrame, scratch, chunk);
         if (gUseFloatFormat[player].load(std::memory_order_acquire)) {
             std::memcpy(static_cast<float*>(ioMainBuffer) + offset, scratch, sizeof(float) * chunk);
         } else {
@@ -707,6 +701,7 @@ OSStatus STDMETHODCALLTYPE DoIOOperation(AudioServerPlugInDriverRef, AudioObject
         offset += chunk;
         remaining -= chunk;
     }
+    gReadFrame[player].store(readFrame, std::memory_order_release);
     return kAudioHardwareNoError;
 }
 

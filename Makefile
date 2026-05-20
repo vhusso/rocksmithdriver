@@ -12,7 +12,7 @@ RENDERED_LAUNCH_AGENT := $(BUILD_DIR)/com.vhusso.rocksmithbridge.helper.plist
 HAL_INSTALL_DIR := /Library/Audio/Plug-Ins/HAL
 HELPER_INSTALL_DIR := /usr/local/libexec/RocksmithMotuBridge
 
-.PHONY: all driver helper ctl rtl unit-tests bundle sign verify test check clean install-local setup-local create-aggregate
+.PHONY: all driver helper ctl rtl unit-tests bundle sign verify test check clean install-local setup-local start-helper stop-helper create-aggregate
 
 all: bundle helper ctl rtl
 
@@ -84,11 +84,17 @@ install-local: all
 
 setup-local: test
 	sudo make install-local
-	./scripts/install_launch_agent.sh
+	$(MAKE) start-helper
 	sleep 2
 	"$(CTL_BIN)" set-buffers 64
 	"$(CTL_BIN)" repair-aggregate
 	"$(CTL_BIN)" doctor
+
+start-helper:
+	./scripts/install_launch_agent.sh
+
+stop-helper:
+	launchctl bootout "gui/$$(id -u)" "$$HOME/Library/LaunchAgents/com.vhusso.rocksmithbridge.helper.plist" 2>/dev/null || true
 
 create-aggregate: ctl
 	"$(CTL_BIN)" repair-aggregate
