@@ -16,6 +16,10 @@ void testFrameClamp() {
     assert(rsbridge::clampFrames(1) == rsbridge::kMinBufferFrames);
     assert(rsbridge::clampFrames(64) == 64);
     assert(rsbridge::clampFrames(999999) == rsbridge::kMaxTargetLatencyFrames);
+    assert(rsbridge::clampActivePlayerCount(0) == 1);
+    assert(rsbridge::clampActivePlayerCount(1) == 1);
+    assert(rsbridge::clampActivePlayerCount(2) == 2);
+    assert(rsbridge::clampActivePlayerCount(99) == rsbridge::kBridgePlayerCount);
 }
 
 void testPlayerPaths() {

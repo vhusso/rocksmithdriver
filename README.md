@@ -1,11 +1,11 @@
 # Rocksmith Audio Input Bridge
 
-Local macOS Core Audio bridge for using an audio-interface input as a Rocksmith 2014 cable-like input. It defaults to MOTU M4 input 1 for player 1 when no config exists, but it can be configured for any Core Audio input device with at least one input channel.
+Local macOS Core Audio bridge for using audio-interface inputs as Rocksmith 2014 cable-like inputs. It defaults to MOTU M4 input 1 for player 1 when no config exists, but it can be configured for one or two active players from any Core Audio input device with enough adjacent input channels.
 
 The project has four pieces:
 
 - `RocksmithMotuBridge.driver`: AudioServerPlugIn HAL driver exposing two mono virtual inputs named `Rocksmith MOTU Bridge Source 1` and `Rocksmith MOTU Bridge Source 2`.
-- `RocksmithBridgeHelper`: user process that captures the configured player 1 input channel and writes mono float32 audio into the shared ring.
+- `RocksmithBridgeHelper`: user process that captures the configured active input channel or adjacent channel pair and writes mono float32 audio into shared rings.
 - `rocksmith_bridge_ctl`: setup and diagnostics tool for config, buffers, and the aggregates named `Rocksmith USB Guitar Adapter 1` and `Rocksmith USB Guitar Adapter 2`.
 - `rocksmith_bridge_rtl`: round-trip latency measurement tool for physical loopback tests.
 
@@ -55,7 +55,7 @@ Then open Audio MIDI Setup and verify:
 - `Rocksmith MOTU Bridge Source 1` exists and has 1 input channel.
 - `Rocksmith USB Guitar Adapter 1` exists and has 1 input channel.
 
-Launch Rocksmith 2014 after those devices are visible. The default setup keeps player 1 only because that is the stable Rocksmith test path and avoids idle player 2 work. `repair-aggregate-all` is still available for aggregate/device visibility experiments, but the low-power helper feeds player 1 only.
+Launch Rocksmith 2014 after those devices are visible. The default setup keeps player 1 only because that is the stable Rocksmith test path and avoids idle player 2 work. Enable two active players explicitly before testing adapter 2.
 
 ## Useful Commands
 
@@ -63,6 +63,8 @@ Launch Rocksmith 2014 after those devices are visible. The default setup keeps p
 ./build/bin/rocksmith_bridge_ctl list-inputs
 ./build/bin/rocksmith_bridge_ctl choose-source
 ./build/bin/rocksmith_bridge_ctl set-source DEVICE_UID CHANNEL
+./build/bin/rocksmith_bridge_ctl set-active-players 1
+./build/bin/rocksmith_bridge_ctl set-active-players 2
 ./build/bin/rocksmith_bridge_ctl get-config
 ./build/bin/rocksmith_bridge_ctl set-buffers 64
 ./build/bin/rocksmith_bridge_ctl doctor
@@ -94,7 +96,26 @@ Config lives at:
 ~/Library/Application Support/RocksmithMotuBridge/config.plist
 ```
 
-Use `set-source` only when you want something other than the automatic MOTU M4 input 1 default. Use the UID printed by `list-inputs`; the channel argument is the input channel used for player 1.
+Use `set-source` only when you want something other than the automatic MOTU M4 input 1 default. Use the UID printed by `list-inputs`; the channel argument is the first input channel used for player 1. When two active players are enabled, the next adjacent channel feeds player 2.
+
+## Player Count
+
+The low-power default is one active player:
+
+```sh
+./build/bin/rocksmith_bridge_ctl set-active-players 1
+./build/bin/rocksmith_bridge_ctl repair-aggregate
+```
+
+To test two Rocksmith adapters from one interface, use adjacent interface inputs. For example, with MOTU M4 inputs 1 and 2:
+
+```sh
+./build/bin/rocksmith_bridge_ctl set-active-players 2
+./build/bin/rocksmith_bridge_ctl set-source com_motu_driver_coreuac_control_interface:m4ma0f8aty 1
+./build/bin/rocksmith_bridge_ctl repair-aggregate-all
+```
+
+Player 1 receives the configured channel. Player 2 receives `CHANNEL + 1`. Return to `set-active-players 1` when you want the helper to stop feeding adapter 2.
 
 ## Other Audio Interfaces
 
@@ -111,7 +132,7 @@ Configure a different interface with its device UID and first channel:
 ./build/bin/rocksmith_bridge_ctl set-source DEVICE_UID CHANNEL
 ```
 
-`choose-source` is the guided path and avoids copy-pasting long device UIDs. The default source model is one active input channel for player 1, so single-input interfaces are supported. For example, `set-source DEVICE_UID 3` captures interface input 3.
+`choose-source` is the guided path and avoids copy-pasting long device UIDs. With one active player, single-input interfaces are supported. With two active players, the selected device must have an adjacent channel pair starting at `CHANNEL`.
 
 ## Latency and Buffers
 

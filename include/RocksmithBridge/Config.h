@@ -27,6 +27,7 @@ inline constexpr char kAggregateDevice2Name[] = "Rocksmith USB Guitar Adapter 2"
 struct BridgeConfig {
     std::string sourceUID;
     uint32_t sourceChannel = 1;
+    uint32_t activePlayerCount = kDefaultActivePlayerCount;
     uint32_t sourceBufferFrames = kDefaultBufferFrames;
     uint32_t targetLatencyFrames = kDefaultTargetLatencyFrames;
     uint32_t virtualBufferFrames = kDefaultBufferFrames;
@@ -40,6 +41,16 @@ inline uint32_t clampFrames(uint32_t frames) {
         return kMaxTargetLatencyFrames;
     }
     return frames;
+}
+
+inline uint32_t clampActivePlayerCount(uint32_t count) {
+    if (count < 1) {
+        return 1;
+    }
+    if (count > kBridgePlayerCount) {
+        return kBridgePlayerCount;
+    }
+    return count;
 }
 
 inline std::string homeDir() {
@@ -133,6 +144,7 @@ inline bool loadConfig(BridgeConfig& config) {
     if (config.sourceChannel == 0) {
         config.sourceChannel = 1;
     }
+    config.activePlayerCount = clampActivePlayerCount(dictionaryUInt(dict, CFSTR("ActivePlayerCount"), config.activePlayerCount));
     config.sourceBufferFrames = clampFrames(dictionaryUInt(dict, CFSTR("SourceBufferFrames"), config.sourceBufferFrames));
     config.targetLatencyFrames = clampFrames(dictionaryUInt(dict, CFSTR("TargetLatencyFrames"), config.targetLatencyFrames));
     config.virtualBufferFrames = clampFrames(dictionaryUInt(dict, CFSTR("VirtualBufferFrames"), config.virtualBufferFrames));
@@ -173,6 +185,7 @@ inline bool saveConfig(const BridgeConfig& config) {
         CFRelease(uid);
     }
     setDictionaryUInt(dict, CFSTR("SourceChannel"), config.sourceChannel == 0 ? 1 : config.sourceChannel);
+    setDictionaryUInt(dict, CFSTR("ActivePlayerCount"), clampActivePlayerCount(config.activePlayerCount));
     setDictionaryUInt(dict, CFSTR("SourceBufferFrames"), clampFrames(config.sourceBufferFrames));
     setDictionaryUInt(dict, CFSTR("TargetLatencyFrames"), clampFrames(config.targetLatencyFrames));
     setDictionaryUInt(dict, CFSTR("VirtualBufferFrames"), clampFrames(config.virtualBufferFrames));
